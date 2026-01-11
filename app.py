@@ -114,9 +114,11 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
         )
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
+    # Patch de escala do Colab
     df = corrige_escala_ultimo(df)
     df = df.sort_values("Data").dropna(subset=["Data", "Último"]).reset_index(drop=True)
 
+    # Features base
     df["var_pct"] = df["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         df[f"mm_{dias}"] = df["Último"].rolling(dias, min_periods=dias).mean()
@@ -148,6 +150,7 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
     df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
     df = df.iloc[:-1].copy()
 
+    # Transformações
     df["ret_1d"] = df["Último"].pct_change()
     df["log_ret"] = np.log(df["Último"]).diff()
     df["ret_5d"] = df["Último"].pct_change(5)
@@ -179,6 +182,7 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
 
 
 def make_catboost():
+    # Mantendo seus hiperparâmetros do Colab
     return CatBoostClassifier(
         iterations=500,
         learning_rate=0.02,
@@ -194,10 +198,6 @@ def make_catboost():
 
 
 def timeseries_cv_f1(model_factory, X, y, n_splits=5):
-    """
-    CV temporal "na mão" (compatível com sklearn 1.6+ e CatBoost).
-    Retorna lista de F1 por fold.
-    """
     tscv = TimeSeriesSplit(n_splits=n_splits)
     scores = []
     for train_idx, val_idx in tscv.split(X):
@@ -244,17 +244,24 @@ def append_log(source, action, selected_date, pred_direction, pred_proba, thresh
 # UI
 # =========================
 st.title("📈 IBOV Signal — Sistema Preditivo (Interativo)")
+st.caption("Acurácia do painel de avaliação usa model.predict() (igual ao Colab). Threshold só afeta o 'produto'.")
 
 with st.sidebar:
     st.header("Dados")
     uploaded = st.file_uploader("Upload de CSV (opcional)", type=["csv"])
 
-    test_n = st.number_input("Janela de teste (últimos N) — use 30 p/ comparar com Colab", min_value=10, max_value=260, value=30, step=10)
-    threshold = st.slider("Threshold P(ALTA) ≥ t (use 0.50 p/ comparar)", 0.30, 0.70, 0.50, 0.01)
+    st.header("Avaliação (para comparar com Colab)")
+    test_n = st.number_input("Teste: últimos N (Colab=30)", min_value=10, max_value=260, value=30, step=10)
+
+    st.header("Produto (threshold para o usuário)")
+    threshold = st.slider("Threshold P(ALTA) ≥ t", 0.30, 0.70, 0.50, 0.01)
 
     st.header("Re-treino")
     retrain = st.button("🔁 Re-treinar e salvar modelo + scaler (.pkl)")
     run_cv = st.checkbox("Rodar CV temporal (F1) no re-treino", value=True)
+
+    st.header("Diagnóstico")
+    show_diag = st.checkbox("Mostrar diagnóstico do dataset", value=True)
 
     st.header("Logs")
     show_logs = st.checkbox("Mostrar logs", value=False)
@@ -292,7 +299,24 @@ y_train, y_test = y_raw[:split_idx], y_raw[split_idx:]
 
 
 # =========================
-# Re-treino (para alinhar com Colab)
+# Diagnóstico (pra você comparar com Colab)
+# =========================
+if show_diag:
+    st.subheader("🔎 Diagnóstico do dataset carregado no Streamlit (compare com o Colab)")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Linhas após features", f"{len(df)}")
+    c2.metric("Data inicial", str(df["Data"].iloc[0].date()))
+    c3.metric("Data final", str(df["Data"].iloc[-1].date()))
+    c4.metric("Teste (N)", f"{len(y_test)}")
+
+    st.write("Distribuição do alvo (dataset todo):", dict(zip([0, 1], np.bincount(y_raw))))
+    st.write("Distribuição do alvo (teste):", dict(zip([0, 1], np.bincount(y_test))))
+    st.write("Últimas 5 datas do dataset:")
+    st.dataframe(df[["Data", "Último", "Alvo"]].tail(5), use_container_width=True)
+
+
+# =========================
+# Re-treino
 # =========================
 if retrain:
     scaler = MinMaxScaler().fit(X_train_raw)
@@ -311,8 +335,9 @@ if retrain:
     joblib.dump(scaler, SCALER_PATH)
     st.sidebar.success("Salvei modelo_catboost.pkl e scaler_minmax.pkl (re-treinados).")
 
+
 # =========================
-# Load modelo/scaler (ou treina se faltar)
+# Load / treino fallback
 # =========================
 try:
     scaler = joblib.load(SCALER_PATH) if os.path.exists(SCALER_PATH) else MinMaxScaler().fit(X_train_raw)
@@ -332,27 +357,37 @@ except:
 
 
 # =========================
-# Avaliação
+# Avaliação (IGUAL COLAB: predict() direto)
 # =========================
 y_pred_test = model.predict(X_test)
+
 acc = accuracy_score(y_test, y_pred_test)
 f1t = f1_score(y_test, y_pred_test)
 
-st.subheader("✅ Avaliação (mesmo split temporal do Colab quando N=30)")
+st.subheader("✅ Avaliação do modelo (classe direta, igual Colab)")
 c1, c2, c3 = st.columns(3)
 c1.metric("Acurácia (teste)", f"{acc:.2%}")
 c2.metric("F1-score (teste)", f"{f1t:.3f}")
-c3.metric("Tamanho teste", f"{len(y_test)}")
+c3.metric("Tamanho do teste", f"{len(y_test)}")
 
-st.write("Confusão:")
+st.write("Matriz de confusão:")
 st.write(confusion_matrix(y_test, y_pred_test))
 st.text("Relatório:")
 st.text(classification_report(y_test, y_pred_test))
 
+if acc < 0.75:
+    st.error(
+        "Acurácia < 75%. As causas mais comuns são: (1) CSV diferente do Colab, (2) modelo/scaler antigo, (3) dataset com período diferente.\n"
+        "✅ Faça: test_n=30, clique 'Re-treinar e salvar', e confirme no diagnóstico se as datas/linhas batem com seu Colab."
+    )
+
 
 # =========================
-# Probabilidades/sinais no histórico
+# Produto (threshold e probabilidade, NÃO afeta a métrica acima)
 # =========================
+st.divider()
+st.subheader("🧠 Produto — selecione uma data e veja a tendência do dia seguinte")
+
 X_all_scaled = scaler.transform(X_raw)
 if hasattr(model, "predict_proba"):
     proba_all = model.predict_proba(X_all_scaled)[:, 1]
@@ -360,13 +395,6 @@ else:
     proba_all = model.predict(X_all_scaled).astype(float)
 
 pred_all = (proba_all >= threshold).astype(int)
-
-
-# =========================
-# Produto (data -> previsão)
-# =========================
-st.divider()
-st.subheader("🧠 Produto — selecione uma data e veja a tendência do dia seguinte")
 
 date_options = df["Data"].dt.date.tolist()
 selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1)
@@ -391,7 +419,7 @@ else:
 
 append_log(source_name, "predict_by_date", str(selected_date), y_sel, p_sel, threshold)
 
-with st.expander("Ajustes do gráfico", expanded=True):
+with st.expander("Gráfico do produto", expanded=True):
     view_n = st.slider("Mostrar últimos N pontos", 60, min(1500, len(df)), 400, 20)
 
 df_plot = df.tail(int(view_n)).copy()
@@ -404,7 +432,7 @@ price_vals = df_plot["Último"].astype(float).values
 fig = make_subplots(
     rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
     row_heights=[0.68, 0.32],
-    subplot_titles=("Preço + Sinal", "Probabilidade de ALTA (com threshold)")
+    subplot_titles=("Preço + Sinal (produto)", "Probabilidade de ALTA (produto)")
 )
 
 fig.add_trace(go.Scatter(x=df_plot["Data"], y=df_plot["Último"], mode="lines", name="Preço (Último)"), row=1, col=1)
