@@ -474,6 +474,117 @@ with tab_monitor:
         ensure_log()
         log_df = pd.read_csv(LOG_PATH, on_bad_lines="skip")
         st.dataframe(log_df.tail(50), use_container_width=True)
+def simular_futuro_cenario(df_base: pd.DataFrame, dias_a_frente: int, retorno_diario: float):
+    """
+    Simula um caminho de preços para datas futuras e recalcula as features.
+    retorno_diario em decimal (ex.: 0.002 = +0,2% ao dia)
+    """
+    df_sim = df_base.copy()
+
+    last_date = df_sim["Data"].iloc[-1]
+    last_close = float(df_sim["Último"].iloc[-1])
+
+    # cria datas futuras (dias corridos)
+    future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=dias_a_frente, freq="D")
+
+    # cria preços futuros por retorno constante
+    future_close = []
+    price = last_close
+    for _ in range(dias_a_frente):
+        price = price * (1 + retorno_diario)
+        future_close.append(price)
+
+    # adiciona linhas futuras com colunas mínimas
+    future_df = pd.DataFrame({
+        "Data": future_dates,
+        "Último": future_close,
+        # aprox: mantém Abertura/Máxima/Mínima iguais ao Último (simples)
+        "Abertura": future_close,
+        "Máxima": future_close,
+        "Mínima": future_close,
+        # volume: mantém último volume conhecido (simples)
+        "Vol.": [float(df_sim["Vol."].iloc[-1])] * dias_a_frente,
+    })
+
+    # concatena e recalcula TODAS as features com as mesmas regras do seu pipeline
+    df_all = pd.concat([df_sim, future_df], ignore_index=True)
+
+    # Recalcular features (repetindo a lógica do carregar_dados, mas agora df já é numérico)
+    df_all = df_all.sort_values("Data").reset_index(drop=True)
+
+    df_all["var_pct"] = df_all["Último"].pct_change()
+    for dias in [3, 7, 14, 21, 30]:
+        df_all[f"mm_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).mean()
+    for dias in [5, 10, 20]:
+        df_all[f"vol_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).std()
+
+    df_all["desvio_mm3"] = df_all["Último"] - df_all["mm_3"]
+    df_all["dia"] = df_all["Data"].dt.weekday
+    df_all["rsi"] = calculate_rsi(df_all["Último"])
+    macd, sinal, hist = macd_components(df_all["Último"])
+    df_all["macd"], df_all["sinal_macd"], df_all["hist_macd"] = macd, sinal, hist
+
+    bb_media = df_all["Último"].rolling(20, min_periods=20).mean()
+    bb_std = df_all["Último"].rolling(20, min_periods=20).std()
+    df_all["bb_media"] = bb_media
+    df_all["bb_std"] = bb_std
+    df_all["bb_sup"] = bb_media + 2*bb_std
+    df_all["bb_inf"] = bb_media - 2*bb_std
+    df_all["bb_largura"] = (df_all["bb_sup"] - df_all["bb_inf"]) / bb_media
+
+    tr1 = df_all["Máxima"] - df_all["Mínima"]
+    tr2 = (df_all["Máxima"] - df_all["Último"].shift(1)).abs()
+    tr3 = (df_all["Mínima"] - df_all["Último"].shift(1)).abs()
+    df_all["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df_all["ATR"] = df_all["TR"].rolling(14, min_periods=14).mean()
+
+    # OBV recalculado (usa Vol. e direção do preço)
+    df_all["obv"] = obv_series(df_all)
+
+    df_all["ret_1d"] = df_all["Último"].pct_change()
+    df_all["log_ret"] = np.log(df_all["Último"]).diff()
+    df_all["ret_5d"] = df_all["Último"].pct_change(5)
+    df_all["rv_20"] = df_all["ret_1d"].rolling(20, min_periods=20).std()
+
+    df_all["atr_pct"] = df_all["ATR"] / df_all["Último"]
+    df_all["desvio_mm3_pct"] = (df_all["desvio_mm3"] / df_all["mm_3"]).replace([np.inf, -np.inf], np.nan)
+
+    df_all["vol_log"] = np.log(df_all["Vol."].clip(lower=1))
+    df_all["vol_ret"] = df_all["Vol."].pct_change().replace([np.inf, -np.inf], np.nan)
+
+    df_all["obv_diff"] = pd.Series(df_all["obv"]).diff()
+
+    df_all["z_close_20"] = zscore_roll(df_all["Último"], 20)
+    df_all["z_rsi_20"] = zscore_roll(df_all["rsi"], 20)
+    df_all["z_macd_20"] = zscore_roll(df_all["macd"], 20)
+
+    features = df_base.attrs.get("features_sugeridas")
+    if not features:
+        features = [
+            "ret_1d","log_ret","ret_5d","rv_20",
+            "atr_pct","bb_largura","desvio_mm3_pct",
+            "vol_log","vol_ret","obv_diff",
+            "rsi","macd","sinal_macd","hist_macd",
+            "dia","z_close_20","z_rsi_20","z_macd_20"
+        ]
+
+    # pega somente as linhas futuras
+    df_future = df_all.tail(dias_a_frente).copy()
+    return df_future, features
+df_future, features = simular_futuro_cenario(df, dias_a_frente=10, retorno_diario=0.002)
+
+X_future_raw = df_future[features].values
+X_future = scaler.transform(X_future_raw)
+
+proba = model.predict_proba(X_future)[:, 1]
+pred = (proba >= threshold).astype(int)
+
+out = pd.DataFrame({
+    "Data": df_future["Data"].dt.date,
+    "Preço Simulado": df_future["Último"].astype(float),
+    "Prob(ALTA)": proba,
+    "Sinal": np.where(pred == 1, "ALTA", "BAIXA")
+})
 
 # =========================
 # SOBRE
@@ -490,3 +601,5 @@ with tab_sobre:
 
     st.subheader("Sugestão para o GitHub (documento à parte)")
     st.write("Crie um `MODEL_CARD.md` explicando objetivo, dados, estratégia, validação e limitações.")
+
+
