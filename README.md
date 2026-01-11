@@ -1,4 +1,4 @@
-📈 **IBOVESPA — Sistema Preditivo (CatBoost + Streamlit)
+📈 **IBOVESPA — Sistema Preditivo (CatBoost + Streamlit)**
 
 Aplicação Streamlit para inferência (sem re-treino) de um modelo preditivo de tendência do IBOVESPA para o dia seguinte (ALTA / BAIXA), treinado previamente no Google Colab e empacotado como artefatos:
 
@@ -7,7 +7,7 @@ Aplicação Streamlit para inferência (sem re-treino) de um modelo preditivo de
 
 O app foi desenvolvido como entrega do Tech Challenge – Fase 4, com foco em deploy, monitoramento e visualização do modelo.
 
-🎯 Objetivo do Projeto
+🎯 **Objetivo do Projeto**
 
 Predizer a tendência do IBOVESPA no dia seguinte, a partir de dados históricos:
 
@@ -23,16 +23,16 @@ Disponibilizar uma interface interativa em Streamlit que permita:
 •	Executar backtest completo no histórico
 •	Registrar logs de uso (simulação de produção)
 
-🧠 Funcionamento do Modelo
+🧠 **Funcionamento do Modelo**
 
-Alvo
+**Alvo**
 O alvo é definido como:
 •	1 (ALTA) se Último(t+1) > Último(t)
 •	0 (BAIXA) caso contrário
 
 A última linha do dataset é descartada por não possuir o valor de t+1.
 
-Features Utilizadas
+**Features Utilizadas**
 
 Retorno e volatilidade:
 •	ret_1d, log_ret, ret_5d, rv_20
@@ -65,7 +65,7 @@ O modelo retorna P(ALTA) e o sinal final depende de um threshold ajustável:
 
 pred = (P(ALTA) >= threshold)
 
-🧩 Correção de Escala do Preço (Patch Anti “Gráfico Pente”)
+🧩 **Correção de Escala do Preço (Patch Anti “Gráfico Pente”)**
 
 Alguns CSVs históricos apresentam erros de escala no preço (Último), com valores 10x, 100x ou 1000x menores. Para evitar distorções visuais, o app aplica uma correção automática por vizinhança:
 
@@ -78,7 +78,7 @@ Esse patch é aplicado:
 •	No carregamento do histórico
 •	Antes da geração de gráficos e sinais
 
-🖥️ Estrutura do Streamlit
+🖥️ **Estrutura do Streamlit**
 
 🧠 Aba Produto
 •	Seleção de data histórica
@@ -104,10 +104,10 @@ O modelo não é re-treinado, tratando-se apenas de inferência retrospectiva.
 •	Auditoria do dataset
 •	Visualização e download do log de uso
 
-⚠️ Aviso Legal
+⚠️ **Aviso Legal**
 Projeto estritamente educacional. Não constitui recomendação de investimento ou aconselhamento financeiro.
 
-📌 Próximos Passos (Evolução)
+📌 **Próximos Passos (Evolução)**
 •	Métricas financeiras (retorno acumulado, drawdown)
 •	Explainability (SHAP)
 •	Upload dinâmico de CSV pelo usuário
