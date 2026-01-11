@@ -15,11 +15,11 @@ from catboost import CatBoostClassifier
 # =========================
 # Config
 # =========================
-st.set_page_config(page_title="Tech Challenge Fase 4 — IBOV", layout="wide")
+st.set_page_config(page_title="IBOV Signal — Sistema Preditivo", layout="wide")
 
-DEFAULT_CSV = "Dados Ibovespa (2).csv"      # CSV padrão do repositório
-MODEL_PATH = "modelo_catboost.pkl"          # modelo salvo
-SCALER_PATH = "scaler_minmax.pkl"           # scaler salvo
+DEFAULT_CSV = "Dados Ibovespa (2).csv"
+MODEL_PATH = "modelo_catboost.pkl"
+SCALER_PATH = "scaler_minmax.pkl"
 LOG_PATH = os.path.join("logs", "predictions_log.csv")
 
 
@@ -27,7 +27,6 @@ LOG_PATH = os.path.join("logs", "predictions_log.csv")
 # Funções do seu notebook
 # =========================
 def volume_to_float(value):
-    """Transforma volume com sufixos em número decimal."""
     if isinstance(value, str):
         value = value.strip().upper()
         factor = {"K": 1e3, "M": 1e6, "B": 1e9}
@@ -42,7 +41,6 @@ def volume_to_float(value):
 
 
 def calculate_rsi(prices, window=14):
-    """RSI: Índice de Força Relativa."""
     changes = prices.diff()
     gains = changes.clip(lower=0)
     losses = -changes.clip(upper=0)
@@ -53,7 +51,6 @@ def calculate_rsi(prices, window=14):
 
 
 def macd_components(prices, short=12, long=26, signal=9):
-    """MACD e linha de sinal."""
     short_ema = prices.ewm(span=short, adjust=False).mean()
     long_ema = prices.ewm(span=long, adjust=False).mean()
     macd = short_ema - long_ema
@@ -63,7 +60,6 @@ def macd_components(prices, short=12, long=26, signal=9):
 
 
 def obv_series(data):
-    """Calcula OBV com base em variação de preço."""
     obv = [0]
     for i in range(1, len(data)):
         if data["Último"].iat[i] > data["Último"].iat[i - 1]:
@@ -82,10 +78,6 @@ def zscore_roll(s: pd.Series, w: int = 20) -> pd.Series:
 
 
 def carregar_dados(caminho_csv: str) -> pd.DataFrame:
-    """
-    Sua função (mesma lógica), com parsing de data mais robusto:
-    tenta %d.%m.%Y e se falhar, tenta dayfirst.
-    """
     df = pd.read_csv(caminho_csv)
     df.columns = df.columns.str.strip()
 
@@ -98,8 +90,7 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
     df["Vol."] = df["Vol."].apply(volume_to_float)
     for coluna in ["Último", "Abertura", "Máxima", "Mínima"]:
         df[coluna] = (
-            df[coluna]
-            .astype(str)
+            df[coluna].astype(str)
             .str.replace(".", "", regex=False)
             .str.replace(",", ".", regex=False)
         )
@@ -169,140 +160,25 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
 
 
 # =========================
-# Log robusto (não quebra no Streamlit Cloud)
+# Utilitários: modelo/scaler e log
 # =========================
-def ensure_log():
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-
-    header = [
-        "timestamp", "source", "rows", "last_date",
-        "test_n", "acc_test", "f1_test", "pred_last"
-    ]
-
-    if not os.path.exists(LOG_PATH) or os.path.getsize(LOG_PATH) == 0:
-        pd.DataFrame(columns=header).to_csv(LOG_PATH, index=False)
-        return
-
-    # tenta ler; se estiver corrompido, recria
-    try:
-        pd.read_csv(LOG_PATH, on_bad_lines="skip")
-    except Exception:
+def load_scaler_or_fit(X_train_raw):
+    if os.path.exists(SCALER_PATH):
         try:
-            os.remove(LOG_PATH)
+            return joblib.load(SCALER_PATH)
         except:
             pass
-        pd.DataFrame(columns=header).to_csv(LOG_PATH, index=False)
+    return MinMaxScaler().fit(X_train_raw)
 
 
-def append_log(source, df, test_n, acc, f1, pred_last):
-    ensure_log()
-    row = pd.DataFrame([{
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "source": source,
-        "rows": int(len(df)),
-        "last_date": str(df["Data"].iloc[-1]),
-        "test_n": int(test_n),
-        "acc_test": float(acc),
-        "f1_test": float(f1),
-        "pred_last": int(pred_last),
-    }])
-    row.to_csv(LOG_PATH, mode="a", header=False, index=False)
+def load_model_or_train(X_train, y_train):
+    if os.path.exists(MODEL_PATH):
+        try:
+            return joblib.load(MODEL_PATH)
+        except:
+            pass
 
-
-# =========================
-# App UI
-# =========================
-st.title("📈 Tech Challenge Fase 4 — IBOV (Deploy Streamlit)")
-st.caption("O app usa automaticamente o CSV do repositório. Upload é opcional.")
-
-with st.sidebar:
-    st.header("Fonte de dados")
-    uploaded = st.file_uploader("Upload de outro CSV (opcional)", type=["csv"])
-
-    st.header("Configuração (igual ao notebook)")
-    test_n = st.number_input("Últimos N registros para teste", min_value=10, max_value=200, value=30, step=5)
-
-    st.header("Modelo")
-    use_saved_model = st.checkbox("Usar modelo/scaler salvos (.pkl)", value=True)
-    retrain_if_missing = st.checkbox("Treinar no app se faltar .pkl", value=True)
-
-    st.header("Logs")
-    show_logs = st.checkbox("Mostrar log", value=True)
-
-
-# Define CSV sem exigir upload
-if uploaded is not None:
-    tmp_path = "tmp_upload.csv"
-    with open(tmp_path, "wb") as f:
-        f.write(uploaded.getbuffer())
-    csv_path = tmp_path
-    source_name = f"UPLOAD:{uploaded.name}"
-else:
-    csv_path = DEFAULT_CSV
-    source_name = f"REPO:{DEFAULT_CSV}"
-    if not os.path.exists(csv_path):
-        st.error(
-            f"Não encontrei '{DEFAULT_CSV}' no repositório.\n"
-            "✅ Confirme o nome do arquivo no GitHub (maiúsculas/espaços) "
-            "ou renomeie para algo simples e atualize DEFAULT_CSV."
-        )
-        st.stop()
-
-# Carregar e processar
-try:
-    dados_formatados = carregar_dados(csv_path)
-except Exception as e:
-    st.error(f"Erro ao carregar/processar CSV: {e}")
-    st.stop()
-
-features = dados_formatados.attrs.get("features_sugeridas", [])
-if not features:
-    st.error("Não encontrei 'features_sugeridas' em df.attrs.")
-    st.stop()
-
-# X e y como no notebook
-X_raw = dados_formatados[features].values
-y_raw = dados_formatados["Alvo"].values
-
-# Split temporal: últimos N para teste
-indice_divisao = len(X_raw) - int(test_n)
-if indice_divisao <= 0:
-    st.error("Dataset pequeno demais para esse tamanho de teste.")
-    st.stop()
-
-X_treino_raw, X_teste_raw = X_raw[:indice_divisao], X_raw[indice_divisao:]
-y_treino, y_teste = y_raw[:indice_divisao], y_raw[indice_divisao:]
-
-# Scaler: carrega se existir, senão fit no treino
-scaler = None
-if use_saved_model and os.path.exists(SCALER_PATH):
-    try:
-        scaler = joblib.load(SCALER_PATH)
-    except Exception as e:
-        st.warning(f"Falha ao carregar scaler salvo ({SCALER_PATH}). Vou refazer fit. Detalhe: {e}")
-
-if scaler is None:
-    scaler = MinMaxScaler().fit(X_treino_raw)
-
-X_treino = scaler.transform(X_treino_raw)
-X_teste = scaler.transform(X_teste_raw)
-
-# Modelo: carrega se existir, senão treina
-model = None
-if use_saved_model and os.path.exists(MODEL_PATH):
-    try:
-        model = joblib.load(MODEL_PATH)
-    except Exception as e:
-        st.warning(f"Falha ao carregar modelo salvo ({MODEL_PATH}). Detalhe: {e}")
-
-if model is None:
-    if not retrain_if_missing:
-        st.error(
-            "Modelo .pkl não encontrado (ou falhou ao carregar) e o treino no app está desativado.\n"
-            "✅ Suba 'modelo_catboost.pkl' e 'scaler_minmax.pkl' no GitHub ou habilite treino no app."
-        )
-        st.stop()
-
+    # fallback: treina se não existir (pra não quebrar app)
     model = CatBoostClassifier(
         iterations=500,
         learning_rate=0.02,
@@ -315,81 +191,256 @@ if model is None:
         random_state=42,
         verbose=0,
     )
-    model.fit(X_treino, y_treino)
+    model.fit(X_train, y_train)
+    return model
 
-# Avaliação
-y_pred = model.predict(X_teste)
-acc = accuracy_score(y_teste, y_pred)
-f1 = f1_score(y_teste, y_pred)
-pred_last = int(y_pred[-1])
 
-append_log(source_name, dados_formatados, test_n, acc, f1, pred_last)
-
-# Dashboard
-c1, c2, c3 = st.columns([1.6, 1.0, 1.0])
-
-with c1:
-    st.subheader("Série temporal — Último")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=dados_formatados["Data"], y=dados_formatados["Último"], mode="lines", name="Último"))
-    fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-
-with c2:
-    st.subheader("📌 Métricas (teste)")
-    st.metric("Acurácia", f"{acc:.2%}")
-    st.metric("F1", f"{f1:.3f}")
-    if acc >= 0.75:
-        st.success("✅ Acurácia ≥ 75%")
-    else:
-        st.warning("⚠️ Acurácia < 75% (confira se está usando os .pkl do notebook e o mesmo CSV).")
-
-with c3:
-    st.subheader("📍 Previsão do último registro (teste)")
-    st.write(f"Fonte: {source_name}")
-    if pred_last == 1:
-        st.success("Tendência prevista: **ALTA (1)**")
-    else:
-        st.warning("Tendência prevista: **BAIXA (0)**")
-
-st.divider()
-
-st.subheader(f"Tabela: últimos {int(test_n)} (Real vs Previsão)")
-tabela = pd.DataFrame({
-    "Data": dados_formatados["Data"].iloc[-int(test_n):].values,
-    "Valor Real": y_teste,
-    "Previsão": y_pred
-})
-tabela["Resultado"] = np.where(tabela["Valor Real"] == tabela["Previsão"], "✔️", "❌")
-st.dataframe(tabela, use_container_width=True)
-
-st.subheader("Matriz de confusão / Relatório")
-st.write(confusion_matrix(y_teste, y_pred))
-st.text(classification_report(y_teste, y_pred))
-
-with st.expander("Ver features usadas"):
-    st.write(features)
-
-with st.expander("Salvar artefatos localmente (útil em execução local)"):
-    st.write("No Streamlit Cloud o filesystem pode resetar. Para persistir, suba os .pkl no GitHub.")
-    if st.button("Salvar modelo_catboost.pkl e scaler_minmax.pkl agora"):
-        joblib.dump(model, MODEL_PATH)
-        joblib.dump(scaler, SCALER_PATH)
-        st.success("Arquivos salvos na pasta do app.")
-
-if show_logs:
-    st.subheader("🧾 Log de uso")
-    ensure_log()
+def ensure_log():
+    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    header = [
+        "timestamp", "source", "rows", "last_date",
+        "pred_direction", "pred_proba", "test_n", "acc_test", "f1_test"
+    ]
+    if not os.path.exists(LOG_PATH) or os.path.getsize(LOG_PATH) == 0:
+        pd.DataFrame(columns=header).to_csv(LOG_PATH, index=False)
+        return
     try:
-        log_df = pd.read_csv(LOG_PATH, on_bad_lines="skip")
-        st.dataframe(log_df.tail(50), use_container_width=True)
-    except Exception as e:
-        st.warning("Não consegui ler o log (estava corrompido). Recriei automaticamente.")
+        pd.read_csv(LOG_PATH, on_bad_lines="skip")
+    except Exception:
         try:
             os.remove(LOG_PATH)
         except:
             pass
+        pd.DataFrame(columns=header).to_csv(LOG_PATH, index=False)
+
+
+def append_log(source, df, pred_direction, pred_proba, test_n, acc, f1):
+    ensure_log()
+    row = pd.DataFrame([{
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "source": source,
+        "rows": int(len(df)),
+        "last_date": str(df["Data"].iloc[-1]),
+        "pred_direction": int(pred_direction),
+        "pred_proba": float(pred_proba) if pred_proba is not None else np.nan,
+        "test_n": int(test_n),
+        "acc_test": float(acc),
+        "f1_test": float(f1),
+    }])
+    row.to_csv(LOG_PATH, mode="a", header=False, index=False)
+
+
+def predict_next_signal(model, scaler, X_last_raw):
+    X_last = scaler.transform(X_last_raw)
+    if hasattr(model, "predict_proba"):
+        p = float(model.predict_proba(X_last)[0, 1])
+        yhat = int(p >= 0.5)
+        return yhat, p
+    # fallback
+    yhat = int(model.predict(X_last)[0])
+    return yhat, None
+
+
+# =========================
+# UI: Sidebar
+# =========================
+st.title("📈 IBOV Signal — Sistema Preditivo (Fase 4)")
+st.caption("Foco em produto: gerar um sinal preditivo para o próximo dia, com monitoramento em abas separadas.")
+
+with st.sidebar:
+    st.header("Fonte de dados")
+    uploaded = st.file_uploader("Upload de CSV (opcional)", type=["csv"])
+    test_n = st.number_input("Janela de teste (últimos N)", min_value=10, max_value=200, value=30, step=5)
+
+    st.header("Decisão (produto)")
+    threshold = st.slider("Threshold de decisão (P[ALTA] ≥ t)", 0.30, 0.70, 0.50, 0.01)
+
+    st.header("Visibilidade")
+    show_logs = st.checkbox("Mostrar logs", value=False)
+
+
+# =========================
+# Carregar CSV (repo por padrão)
+# =========================
+if uploaded is not None:
+    tmp_path = "tmp_upload.csv"
+    with open(tmp_path, "wb") as f:
+        f.write(uploaded.getbuffer())
+    csv_path = tmp_path
+    source_name = f"UPLOAD:{uploaded.name}"
+else:
+    csv_path = DEFAULT_CSV
+    source_name = f"REPO:{DEFAULT_CSV}"
+    if not os.path.exists(csv_path):
+        st.error(
+            f"Não encontrei '{DEFAULT_CSV}' no repositório.\n"
+            "Renomeie o arquivo para algo simples (ex.: dados_ibovespa.csv) e atualize DEFAULT_CSV."
+        )
+        st.stop()
+
+try:
+    df = carregar_dados(csv_path)
+except Exception as e:
+    st.error(f"Erro ao carregar/processar CSV: {e}")
+    st.stop()
+
+features = df.attrs.get("features_sugeridas", [])
+X_raw = df[features].values
+y_raw = df["Alvo"].values
+
+# split temporal: últimos N como teste (igual sua lógica)
+split_idx = len(X_raw) - int(test_n)
+if split_idx <= 0:
+    st.error("Dataset pequeno demais para o tamanho de teste escolhido.")
+    st.stop()
+
+X_train_raw, X_test_raw = X_raw[:split_idx], X_raw[split_idx:]
+y_train, y_test = y_raw[:split_idx], y_raw[split_idx:]
+
+# scaler e modelo
+scaler = load_scaler_or_fit(X_train_raw)
+X_train = scaler.transform(X_train_raw)
+X_test = scaler.transform(X_test_raw)
+
+model = load_model_or_train(X_train, y_train)
+
+# avaliação básica (monitoramento)
+y_pred_test = model.predict(X_test)
+acc = accuracy_score(y_test, y_pred_test)
+f1 = f1_score(y_test, y_pred_test)
+
+# produto: previsão do "próximo dia" = usando a última linha disponível
+X_last_raw = df[features].iloc[[-1]].values
+pred_dir, pred_proba = predict_next_signal(model, scaler, X_last_raw)
+if pred_proba is not None:
+    pred_dir = int(pred_proba >= threshold)
+
+append_log(source_name, df, pred_dir, pred_proba, test_n, acc, f1)
+
+# =========================
+# Abas (Produto / Monitoramento / Sobre)
+# =========================
+tab_produto, tab_monitor, tab_sobre = st.tabs(["🧠 Produto", "📊 Monitoramento", "📘 Sobre o modelo"])
+
+# --------
+# PRODUTO
+# --------
+with tab_produto:
+    c1, c2, c3 = st.columns([1.7, 1.0, 1.0])
+
+    with c1:
+        st.subheader("Preço (Último)")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df["Data"], y=df["Último"], mode="lines", name="Último"))
+        fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        st.subheader("Sinal para o próximo dia")
+        last_date = df["Data"].iloc[-1]
+        last_price = float(df["Último"].iloc[-1])
+        st.write(f"**Última data no dataset:** {last_date.date()}")
+        st.metric("Último preço", f"{last_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+        if pred_dir == 1:
+            st.success("📈 **Sinal: ALTA** (comprado)")
+            st.caption("Interpretação: o modelo estima maior chance de fechamento acima do atual no próximo dia.")
+        else:
+            st.warning("📉 **Sinal: BAIXA** (fora / vendido)")
+            st.caption("Interpretação: o modelo estima menor chance de alta no próximo dia.")
+
+        if pred_proba is not None:
+            st.metric("Probabilidade de ALTA", f"{pred_proba:.2%}")
+            st.caption(f"Threshold atual: {threshold:.2f}")
+
+    with c3:
+        st.subheader("Como usar (regra simples)")
+        st.write(
+            "- **Entrada:** sinal ALTA.\n"
+            "- **Saída:** no fechamento do dia seguinte.\n"
+            "- **Objetivo do modelo:** prever se **Último(t+1) > Último(t)**.\n"
+            "- **Não é recomendação financeira**: é um protótipo acadêmico."
+        )
+        st.write(f"Fonte de dados: `{source_name}`")
+
+    st.divider()
+
+    st.subheader("Resumo de decisão do dia")
+    resumo = {
+        "Data base": str(df["Data"].iloc[-1].date()),
+        "Preço base": float(df["Último"].iloc[-1]),
+        "Sinal": "ALTA" if pred_dir == 1 else "BAIXA",
+        "Prob(ALTA)": (float(pred_proba) if pred_proba is not None else None),
+        "Threshold": float(threshold),
+    }
+    st.json(resumo)
+
+# ----------------
+# MONITORAMENTO
+# ----------------
+with tab_monitor:
+    st.subheader("Métricas do modelo (janela de teste)")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Acurácia (teste)", f"{acc:.2%}")
+    c2.metric("F1 (teste)", f"{f1:.3f}")
+    c3.metric("Janela de teste", f"{int(test_n)} últimos registros")
+
+    if acc >= 0.75:
+        st.success("✅ Acurácia ≥ 75% na janela de teste configurada.")
+    else:
+        st.warning("⚠️ Acurácia < 75%. Ajuste N do teste ou valide se seus .pkl correspondem ao treino do notebook.")
+
+    st.divider()
+
+    st.subheader("Matriz de confusão / relatório")
+    st.write(confusion_matrix(y_test, y_pred_test))
+    st.text(classification_report(y_test, y_pred_test))
+
+    st.divider()
+
+    st.subheader("Real vs Previsto (teste)")
+    tabela = pd.DataFrame({
+        "Data": df["Data"].iloc[-int(test_n):].values,
+        "Real": y_test,
+        "Previsto": y_pred_test
+    })
+    tabela["Acerto"] = np.where(tabela["Real"] == tabela["Previsto"], "✔️", "❌")
+    st.dataframe(tabela, use_container_width=True)
+
+    if show_logs:
+        st.divider()
+        st.subheader("Logs (predições realizadas no app)")
         ensure_log()
-        log_df = pd.read_csv(LOG_PATH)
-        st.dataframe(log_df, use_container_width=True)
-        st.caption(f"Detalhe técnico: {e}")
+        log_df = pd.read_csv(LOG_PATH, on_bad_lines="skip")
+        st.dataframe(log_df.tail(50), use_container_width=True)
+
+# ----------
+# SOBRE
+# ----------
+with tab_sobre:
+    st.subheader("O que este sistema faz")
+    st.write(
+        "Este app é um **sistema preditivo** que gera um sinal (ALTA/BAIXA) para o próximo dia "
+        "a partir de indicadores técnicos calculados sobre o histórico do IBOV."
+    )
+
+    st.subheader("Definição do alvo")
+    st.code('Alvo = 1 se Último(t+1) > Último(t), senão 0', language="text")
+
+    st.subheader("Prevenção de vazamento")
+    st.write(
+        "- Features são calculadas com janelas passadas.\n"
+        "- Split temporal: treino antes, teste nos últimos N.\n"
+        "- `MinMaxScaler` com `fit` apenas no treino."
+    )
+
+    st.subheader("Features usadas")
+    st.write(features)
+
+    st.subheader("Arquivos do repositório recomendados")
+    st.write(
+        "- `MODEL_CARD.md` (estratégia, hipóteses, limitações)\n"
+        "- `README.md` (como rodar + link do app)\n"
+        "- `notebook.ipynb` (experimentos)\n"
+        "- `modelo_catboost.pkl` e `scaler_minmax.pkl` (artefatos)"
+    )
