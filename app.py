@@ -1,5 +1,4 @@
 import os
-import json
 from datetime import datetime
 
 import numpy as np
@@ -7,11 +6,11 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
+import joblib
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, f1_score
 
 from catboost import CatBoostClassifier
-import joblib
 
 
 # =========================
@@ -19,13 +18,14 @@ import joblib
 # =========================
 st.set_page_config(page_title="Tech Challenge Fase 4 — IBOV", layout="wide")
 
-MODEL_PATH = "modelo_catboost.pkl"
-SCALER_PATH = "scaler_minmax.pkl"
+DEFAULT_CSV = "Dados Ibovespa (2).csv"      # CSV padrão do repositório
+MODEL_PATH = "modelo_catboost.pkl"          # modelo salvo
+SCALER_PATH = "scaler_minmax.pkl"           # scaler salvo
 LOG_PATH = os.path.join("logs", "predictions_log.csv")
 
 
 # =========================
-# FUNÇÕES (iguais ao seu notebook)
+# Funções do seu notebook
 # =========================
 def volume_to_float(value):
     """Transforma volume com sufixos em número decimal."""
@@ -82,15 +82,22 @@ def zscore_roll(s: pd.Series, w: int = 20) -> pd.Series:
     return (s - m) / sd
 
 
-def carregar_dados(caminho_csv):
+def carregar_dados(caminho_csv: str) -> pd.DataFrame:
     """
-    Criação de indicadores técnicos (igual ao seu notebook).
+    Sua função (mesma lógica) com 1 melhoria: parse de data mais robusto
+    (funciona com %d.%m.%Y e também com formatos comuns).
     """
     df = pd.read_csv(caminho_csv)
     df.columns = df.columns.str.strip()
+
+    # tenta o formato do seu notebook; se falhar, tenta parsing genérico
     df["Data"] = pd.to_datetime(df["Data"], format="%d.%m.%Y", errors="coerce")
+    if df["Data"].isna().mean() > 0.5:
+        df["Data"] = pd.to_datetime(df["Data"], dayfirst=True, errors="coerce")
+
     df = df.sort_values("Data").dropna(subset=["Data"])
 
+    # Converter volume e preços (locale BR -> float)
     df["Vol."] = df["Vol."].apply(volume_to_float)
     for coluna in ["Último", "Abertura", "Máxima", "Mínima"]:
         df[coluna] = (
@@ -100,6 +107,7 @@ def carregar_dados(caminho_csv):
         )
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
+    # Features base
     df["var_pct"] = df["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         df[f"mm_{dias}"] = df["Último"].rolling(dias, min_periods=dias).mean()
@@ -112,6 +120,7 @@ def carregar_dados(caminho_csv):
     macd, sinal, hist = macd_components(df["Último"])
     df["macd"], df["sinal_macd"], df["hist_macd"] = macd, sinal, hist
 
+    # Bandas de Bollinger (20) e largura relativa
     bb_media = df["Último"].rolling(20, min_periods=20).mean()
     bb_std   = df["Último"].rolling(20, min_periods=20).std()
     df["bb_media"]   = bb_media
@@ -120,16 +129,19 @@ def carregar_dados(caminho_csv):
     df["bb_inf"]     = bb_media - 2*bb_std
     df["bb_largura"] = (df["bb_sup"] - df["bb_inf"]) / bb_media
 
+    # ATR (14)
     tr1 = df["Máxima"] - df["Mínima"]
     tr2 = (df["Máxima"] - df["Último"].shift(1)).abs()
     tr3 = (df["Mínima"] - df["Último"].shift(1)).abs()
     df["TR"]  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["ATR"] = df["TR"].rolling(14, min_periods=14).mean()
 
+    # OBV e Alvo
     df["obv"]  = obv_series(df)
     df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
     df = df.iloc[:-1].copy()
 
+    # Transformações mais estacionárias
     df["ret_1d"]   = df["Último"].pct_change()
     df["log_ret"]  = np.log(df["Último"]).diff()
     df["ret_5d"]   = df["Último"].pct_change(5)
@@ -154,95 +166,132 @@ def carregar_dados(caminho_csv):
         "rsi","macd","sinal_macd","hist_macd",
         "dia","z_close_20","z_rsi_20","z_macd_20"
     ]
+
     df = df.dropna(subset=features_sugeridas + ["Alvo"]).copy()
     df.attrs["features_sugeridas"] = features_sugeridas
     return df
 
 
 # =========================
-# Log simples de uso
+# Log (simples)
 # =========================
 def ensure_log():
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     if not os.path.exists(LOG_PATH):
         pd.DataFrame(columns=[
-            "timestamp", "arquivo", "rows", "last_date", "pred_last",
-            "acc_test_30", "f1_test_30"
+            "timestamp", "source", "rows", "last_date",
+            "test_n", "acc_test", "f1_test", "pred_last"
         ]).to_csv(LOG_PATH, index=False)
 
-def append_log(filename, df, pred_last, acc, f1):
+def append_log(source, df, test_n, acc, f1, pred_last):
     ensure_log()
     row = pd.DataFrame([{
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "arquivo": filename,
+        "source": source,
         "rows": int(len(df)),
         "last_date": str(df["Data"].iloc[-1]),
+        "test_n": int(test_n),
+        "acc_test": float(acc),
+        "f1_test": float(f1),
         "pred_last": int(pred_last),
-        "acc_test_30": float(acc),
-        "f1_test_30": float(f1),
     }])
     row.to_csv(LOG_PATH, mode="a", header=False, index=False)
 
 
 # =========================
-# UI
+# App UI
 # =========================
-st.title("📈 Tech Challenge Fase 4 — IBOV (Streamlit)")
-st.caption("App baseado diretamente no seu notebook (mesmo pipeline de features + split dos últimos 30 dias).")
+st.title("📈 Tech Challenge Fase 4 — IBOV (Deploy Streamlit)")
+st.caption("Usa o CSV do repositório automaticamente. Upload é opcional.")
 
 with st.sidebar:
-    st.header("Entrada")
-    uploaded = st.file_uploader("Envie o CSV do IBOV", type=["csv"])
+    st.header("Fonte de dados")
+    uploaded = st.file_uploader("Upload de outro CSV (opcional)", type=["csv"])
 
-    st.header("Configuração (igual notebook)")
-    test_size_last_n = st.number_input("Qtd. últimos registros para teste", min_value=10, max_value=200, value=30, step=5)
+    st.header("Configuração (igual ao notebook)")
+    test_n = st.number_input("Últimos N registros para teste", min_value=10, max_value=200, value=30, step=5)
 
-    st.header("Modo de execução")
-    use_saved_artifacts = st.checkbox("Usar modelo/scaler salvos (.pkl)", value=True)
-    retrain_inside_app = st.checkbox("Re-treinar dentro do app (mais lento)", value=False)
+    st.header("Modelo")
+    use_saved_model = st.checkbox("Usar modelo/scaler salvos (.pkl)", value=True)
+    retrain_if_missing = st.checkbox("Treinar no app se faltar .pkl", value=True)
 
     st.header("Logs")
     show_logs = st.checkbox("Mostrar log", value=True)
 
 
-if uploaded is None:
-    st.info("Faça upload do CSV para começar.")
+# Define caminho do CSV sem exigir upload
+if uploaded is not None:
+    tmp_path = "tmp_upload.csv"
+    with open(tmp_path, "wb") as f:
+        f.write(uploaded.getbuffer())
+    csv_path = tmp_path
+    source_name = f"UPLOAD:{uploaded.name}"
+else:
+    csv_path = DEFAULT_CSV
+    source_name = f"REPO:{DEFAULT_CSV}"
+    if not os.path.exists(csv_path):
+        st.error(
+            f"Não encontrei o arquivo padrão '{DEFAULT_CSV}' no repositório.\n\n"
+            "✅ Solução: confirme o nome do arquivo no GitHub OU renomeie para algo simples (ex.: dados_ibovespa.csv) "
+            "e atualize DEFAULT_CSV no topo do app."
+        )
+        st.stop()
+
+# Carrega e processa
+try:
+    dados_formatados = carregar_dados(csv_path)
+except Exception as e:
+    st.error(f"Erro ao carregar/processar CSV: {e}")
     st.stop()
 
-# Salva temporariamente pra poder passar o caminho na função (mudança mínima)
-tmp_path = os.path.join("tmp_upload.csv")
-with open(tmp_path, "wb") as f:
-    f.write(uploaded.getbuffer())
+features = dados_formatados.attrs.get("features_sugeridas", [])
+if not features:
+    st.error("Não encontrei 'features_sugeridas' em df.attrs. Algo saiu errado na função carregar_dados.")
+    st.stop()
 
-dados_formatados = carregar_dados(tmp_path)
-variaveis_explicativas = dados_formatados.attrs.get("features_sugeridas")
-
-# X e y exatamente como seu notebook
-X_raw = dados_formatados[variaveis_explicativas].values
+# X e y como no notebook
+X_raw = dados_formatados[features].values
 y_raw = dados_formatados["Alvo"].values
 
-# Split temporal: últimos N para teste
-indice_divisao = len(X_raw) - int(test_size_last_n)
+# Split temporal: últimos N para teste (igual notebook)
+indice_divisao = len(X_raw) - int(test_n)
 if indice_divisao <= 0:
-    st.error("Seu dataset ficou pequeno demais para esse tamanho de teste.")
+    st.error("Dataset pequeno demais para esse tamanho de teste.")
     st.stop()
 
 X_treino_raw, X_teste_raw = X_raw[:indice_divisao], X_raw[indice_divisao:]
 y_treino, y_teste = y_raw[:indice_divisao], y_raw[indice_divisao:]
 
-# Scaling SEM vazamento (igual notebook)
-if use_saved_artifacts and os.path.exists(SCALER_PATH) and not retrain_inside_app:
-    scaler = joblib.load(SCALER_PATH)
-else:
+# Scaler: carrega se existir, senão fit no treino
+scaler = None
+if use_saved_model and os.path.exists(SCALER_PATH):
+    try:
+        scaler = joblib.load(SCALER_PATH)
+    except Exception as e:
+        st.warning(f"Falha ao carregar scaler salvo ({SCALER_PATH}). Vou refazer fit. Detalhe: {e}")
+
+if scaler is None:
     scaler = MinMaxScaler().fit(X_treino_raw)
 
 X_treino = scaler.transform(X_treino_raw)
 X_teste  = scaler.transform(X_teste_raw)
 
-# Modelo
-if use_saved_artifacts and os.path.exists(MODEL_PATH) and not retrain_inside_app:
-    model = joblib.load(MODEL_PATH)
-else:
+# Modelo: carrega se existir, senão treina (se permitido)
+model = None
+if use_saved_model and os.path.exists(MODEL_PATH):
+    try:
+        model = joblib.load(MODEL_PATH)
+    except Exception as e:
+        st.warning(f"Falha ao carregar modelo salvo ({MODEL_PATH}). Detalhe: {e}")
+
+if model is None:
+    if not retrain_if_missing:
+        st.error(
+            "Modelo .pkl não encontrado (ou falhou ao carregar) e você desativou 'Treinar no app se faltar .pkl'.\n\n"
+            "✅ Solução: suba 'modelo_catboost.pkl' e 'scaler_minmax.pkl' no GitHub, ou habilite o treino no app."
+        )
+        st.stop()
+
     model = CatBoostClassifier(
         iterations=500,
         learning_rate=0.02,
@@ -257,17 +306,13 @@ else:
     )
     model.fit(X_treino, y_treino)
 
-# Predições
+# Avaliação no teste
 y_pred = model.predict(X_teste)
-
 acc = accuracy_score(y_teste, y_pred)
 f1 = f1_score(y_teste, y_pred)
-
-# Previsão do "último dia" (última linha do teste)
 pred_last = int(y_pred[-1])
 
-# Log
-append_log(uploaded.name, dados_formatados, pred_last, acc, f1)
+append_log(source_name, dados_formatados, test_n, acc, f1, pred_last)
 
 # =========================
 # Dashboard
@@ -282,27 +327,28 @@ with c1:
     st.plotly_chart(fig, use_container_width=True)
 
 with c2:
-    st.subheader("📌 Métricas (últimos N)")
-    st.metric("Acurácia (teste)", f"{acc:.2%}")
-    st.metric("F1 (teste)", f"{f1:.3f}")
+    st.subheader("📌 Métricas (teste)")
+    st.metric("Acurácia", f"{acc:.2%}")
+    st.metric("F1", f"{f1:.3f}")
 
     if acc >= 0.75:
         st.success("✅ Acurácia ≥ 75%")
     else:
-        st.warning("⚠️ Acurácia < 75% (veja dicas abaixo)")
+        st.warning("⚠️ Acurácia < 75% (teste com N diferente ou confira se está usando os .pkl do notebook)")
 
 with c3:
-    st.subheader("📍 Previsão do último registro")
+    st.subheader("📍 Previsão do último registro (teste)")
     if pred_last == 1:
         st.success("Tendência prevista: **ALTA (1)**")
     else:
         st.warning("Tendência prevista: **BAIXA (0)**")
+    st.caption(f"Fonte: {source_name}")
 
 st.divider()
 
-st.subheader("Tabela: últimos N (Real vs Previsão)")
+st.subheader(f"Tabela: últimos {int(test_n)} (Real vs Previsão)")
 tabela = pd.DataFrame({
-    "Data": dados_formatados["Data"].iloc[-int(test_size_last_n):].values,
+    "Data": dados_formatados["Data"].iloc[-int(test_n):].values,
     "Valor Real": y_teste,
     "Previsão": y_pred
 })
@@ -316,23 +362,18 @@ st.text(classification_report(y_teste, y_pred))
 
 st.divider()
 
-with st.expander("Salvar artefatos (.pkl) a partir do app (opcional)"):
-    if st.button("Salvar modelo_catboost.pkl e scaler_minmax.pkl"):
+with st.expander("Ver features usadas"):
+    st.write(features)
+
+with st.expander("Salvar artefatos localmente (útil em execução local)"):
+    st.write("No Streamlit Cloud, o filesystem pode resetar. Para persistência, suba os arquivos no GitHub.")
+    if st.button("Salvar modelo_catboost.pkl e scaler_minmax.pkl agora"):
         joblib.dump(model, MODEL_PATH)
         joblib.dump(scaler, SCALER_PATH)
-        st.success("Arquivos salvos na pasta do app (útil em execução local).")
-
-with st.expander("Dicas rápidas se a acurácia cair no app"):
-    st.write(
-        "- Garanta que você está usando **os mesmos .pkl** gerados no notebook.\n"
-        "- Evite re-treinar no app (marque **Usar modelo/scaler salvos**).\n"
-        "- Se o dataset do upload for diferente do do treino, a acurácia pode mudar.\n"
-        "- O split de **últimos 30** é muito instável: tente 60/90 pra ter medida mais estável."
-    )
+        st.success("Arquivos salvos na pasta do app.")
 
 if show_logs:
     st.subheader("🧾 Log de uso")
     ensure_log()
     log_df = pd.read_csv(LOG_PATH)
     st.dataframe(log_df.tail(50), use_container_width=True)
-
