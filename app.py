@@ -21,6 +21,30 @@ SCALER_PATH = "scaler_minmax.pkl"
 
 
 # =========================
+# MÉTRICAS FIXAS (do Colab) — SEM RETREINO
+# =========================
+METRICAS_COLAB = {
+    "modelo": "CatBoostClassifier (treinado no Colab / Fase 2)",
+    "janela_validacao": "Holdout temporal: últimos 30 registros como teste",
+    "cv_f1_mean": 0.531,
+    "cv_f1_pm": 0.083,  # (+/- 0.083) conforme seu print
+    "acc_train": 0.8203,
+    "acc_test": 0.8000,
+    "overfit": 0.0203,
+    "cm": [[13, 3],
+           [3, 11]],  # Confusão do seu relatório do Colab
+    "report": """precision    recall  f1-score   support
+
+0       0.81      0.81      0.81        16
+1       0.79      0.79      0.79        14
+
+accuracy                           0.80        30
+macro avg       0.80      0.80      0.80        30
+weighted avg    0.80      0.80      0.80        30"""
+}
+
+
+# =========================
 # Funções do Colab
 # =========================
 def volume_to_float(value):
@@ -77,7 +101,6 @@ def zscore_roll(s: pd.Series, w: int = 20) -> pd.Series:
 def correcao_escala_por_vizinhanca(df: pd.DataFrame) -> pd.DataFrame:
     """
     Patch idêntico ao seu Colab para corrigir 'Último' quando vem 10x/100x/1000x menor.
-    Deve rodar ANTES das features, senão o gráfico fica 'pente' e as features ficam distorcidas.
     """
     df = df.copy()
 
@@ -103,13 +126,11 @@ def carregar_dados(caminho_csv):
     """
     Pipeline do Colab + patch de correção de escala (para evitar gráfico 'pente').
     """
-    # 1) Ler e padronizar
     df = pd.read_csv(caminho_csv)
     df.columns = df.columns.str.strip()
     df["Data"] = pd.to_datetime(df["Data"], format="%d.%m.%Y", errors="coerce")
     df = df.sort_values("Data").dropna(subset=["Data"])
 
-    # 2) Converter volume e preços (locale BR -> float)
     df["Vol."] = df["Vol."].apply(volume_to_float)
 
     for coluna in ["Último", "Abertura", "Máxima", "Mínima"]:
@@ -120,17 +141,10 @@ def carregar_dados(caminho_csv):
         )
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
-    # ===== PATCH DO COLAB (IMPORTANTE) =====
-    # Corrigir escala do Último antes de qualquer feature
+    # PATCH (igual Colab)
     df = correcao_escala_por_vizinhanca(df)
-
-    # Garantir que as outras colunas continuam alinhadas
-    # (se elas também tiverem problemas de escala, o correto seria tratá-las, mas seu patch é apenas para "Último")
-    # Reindexando pelas datas existentes após o patch:
-    # Se "Abertura/Máxima/Mínima" tiverem NaN onde "Último" existe, seguimos com NaN e o dropna das features remove.
     df = df.sort_values("Data").reset_index(drop=True)
 
-    # 3) Features base
     df["var_pct"] = df["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         df[f"mm_{dias}"] = df["Último"].rolling(dias, min_periods=dias).mean()
@@ -143,7 +157,6 @@ def carregar_dados(caminho_csv):
     macd, sinal, hist = macd_components(df["Último"])
     df["macd"], df["sinal_macd"], df["hist_macd"] = macd, sinal, hist
 
-    # Bandas de Bollinger (20) e largura relativa
     bb_media = df["Último"].rolling(20, min_periods=20).mean()
     bb_std = df["Último"].rolling(20, min_periods=20).std()
     df["bb_media"] = bb_media
@@ -152,19 +165,16 @@ def carregar_dados(caminho_csv):
     df["bb_inf"] = bb_media - 2 * bb_std
     df["bb_largura"] = (df["bb_sup"] - df["bb_inf"]) / bb_media
 
-    # ATR (14)
     tr1 = df["Máxima"] - df["Mínima"]
     tr2 = (df["Máxima"] - df["Último"].shift(1)).abs()
     tr3 = (df["Mínima"] - df["Último"].shift(1)).abs()
     df["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["ATR"] = df["TR"].rolling(14, min_periods=14).mean()
 
-    # OBV e Alvo
     df["obv"] = obv_series(df)
     df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
     df = df.iloc[:-1].copy()
 
-    # 4) Transformações mais estacionárias
     df["ret_1d"] = df["Último"].pct_change()
     df["log_ret"] = np.log(df["Último"]).diff()
     df["ret_5d"] = df["Último"].pct_change(5)
@@ -182,7 +192,6 @@ def carregar_dados(caminho_csv):
     df["z_rsi_20"] = zscore_roll(df["rsi"], 20)
     df["z_macd_20"] = zscore_roll(df["macd"], 20)
 
-    # 5) Limpeza de NaN com base nas features que realmente iremos usar
     features_sugeridas = [
         "ret_1d", "log_ret", "ret_5d", "rv_20",
         "atr_pct", "bb_largura", "desvio_mm3_pct",
@@ -277,6 +286,29 @@ def predict_proba_batch(model, scaler, X, threshold):
     return pred, proba
 
 
+def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
+    cm = np.array(cm, dtype=int)
+    x = [f"Prev: {labels[0]}", f"Prev: {labels[1]}"]
+    y = [f"Real: {labels[0]}", f"Real: {labels[1]}"]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=cm,
+            x=x,
+            y=y,
+            text=cm,
+            texttemplate="%{text}",
+            hovertemplate="",
+        )
+    )
+    fig.update_layout(
+        title="Matriz de Confusão (valores do Colab)",
+        height=420,
+        margin=dict(l=10, r=10, t=50, b=10)
+    )
+    return fig
+
+
 # =========================
 # App
 # =========================
@@ -288,7 +320,6 @@ with st.sidebar:
     view_n = st.slider("Janela do gráfico (últimos N)", 60, 1500, 400, 20)
     st.caption("Patch de escala do `Último` aplicado (corrige gráfico 'pente').")
 
-# Checar CSV no repo
 if not os.path.exists(DEFAULT_CSV):
     st.error(
         f"Não encontrei `{DEFAULT_CSV}` no repositório. "
@@ -296,18 +327,15 @@ if not os.path.exists(DEFAULT_CSV):
     )
     st.stop()
 
-# Carregar modelo/scaler
 try:
     model, scaler = load_model_and_scaler()
 except Exception as e:
     st.error(str(e))
     st.stop()
 
-# Carregar dados com patch
 df, features = load_df_and_features(DEFAULT_CSV)
 
-# Tabs
-tab_produto, tab_futuro, tab_diag = st.tabs(["🧠 Produto", "🔮 Simulação futura (30 dias)", "🔎 Diagnóstico"])
+tab_produto, tab_futuro, tab_diag = st.tabs(["🧠 Produto", "🔮 Simulação futura (30 dias)", "🔎 Diagnóstico (métricas)"])
 
 with tab_produto:
     st.subheader("Produto: selecione uma data e obtenha a tendência do dia seguinte")
@@ -374,7 +402,6 @@ with tab_futuro:
         prices.append(prices[-1] * (1.0 + r))
     future_prices = prices[1:]
 
-    # Monta DF “mínimo” para recalcular features
     base = df[["Data", "Vol.", "Último", "Abertura", "Máxima", "Mínima"]].copy()
     fut = pd.DataFrame({
         "Data": future_dates,
@@ -386,11 +413,8 @@ with tab_futuro:
     })
 
     full = pd.concat([base, fut], ignore_index=True).sort_values("Data").reset_index(drop=True)
-
-    # Aplicar o patch também no full (evita “pente” se o cenário gerar algo estranho)
     full = correcao_escala_por_vizinhanca(full)
 
-    # Recalcular features (mesma lógica)
     full["var_pct"] = full["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         full[f"mm_{dias}"] = full["Último"].rolling(dias, min_periods=dias).mean()
@@ -462,13 +486,49 @@ with tab_futuro:
     st.plotly_chart(fig2, use_container_width=True)
 
 with tab_diag:
-    st.subheader("Diagnóstico (para confirmar que o 'pente' foi corrigido)")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Linhas", len(df))
-    c2.metric("Data inicial", str(df["Data"].iloc[0].date()))
-    c3.metric("Data final", str(df["Data"].iloc[-1].date()))
+    st.subheader("Painel explícito de métricas (fixas do Colab — sem re-treino)")
 
-    st.write("Resumo do preço corrigido (`Último`):")
+    st.caption(f"Modelo: {METRICAS_COLAB['modelo']}")
+    st.caption(f"Validação: {METRICAS_COLAB['janela_validacao']}")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Acurácia Treino", f"{METRICAS_COLAB['acc_train']*100:.2f}%")
+    c2.metric("Acurácia Teste", f"{METRICAS_COLAB['acc_test']*100:.2f}%")
+    c3.metric("Overfitting", f"{METRICAS_COLAB['overfit']*100:.2f}%")
+    c4.metric("F1 (CV)", f"{METRICAS_COLAB['cv_f1_mean']:.3f} ± {METRICAS_COLAB['cv_f1_pm']:.3f}")
+
+    st.divider()
+
+    cm = METRICAS_COLAB["cm"]
+    cm_df = pd.DataFrame(
+        cm,
+        index=["Real: Queda (0)", "Real: Alta (1)"],
+        columns=["Prev: Queda (0)", "Prev: Alta (1)"]
+    )
+
+    colA, colB = st.columns([1, 1.2])
+    with colA:
+        st.write("Matriz de confusão (tabela):")
+        st.dataframe(cm_df, use_container_width=True)
+
+    with colB:
+        st.write("Matriz de confusão (gráfico):")
+        st.plotly_chart(plot_confusion_matrix(cm), use_container_width=True)
+
+    st.divider()
+
+    st.write("Classification report (do Colab):")
+    st.code(METRICAS_COLAB["report"])
+
+    st.divider()
+
+    st.write("Diagnóstico rápido do dataset carregado (para auditoria):")
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Linhas válidas (features)", len(df))
+    d2.metric("Data inicial", str(df["Data"].iloc[0].date()))
+    d3.metric("Data final", str(df["Data"].iloc[-1].date()))
+
+    st.write("Resumo do `Último` (corrigido):")
     st.write(df["Último"].describe())
 
     st.write("Últimos 10 pontos (Data, Último):")
