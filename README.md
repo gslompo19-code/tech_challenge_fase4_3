@@ -1,4 +1,4 @@
-**📈 IBOVESPA — Sistema Preditivo (CatBoost + Streamlit)
+📈 **IBOVESPA — Sistema Preditivo (CatBoost + Streamlit)
 
 Aplicação Streamlit para inferência (sem re-treino) de um modelo preditivo de tendência do IBOVESPA para o dia seguinte (ALTA / BAIXA), treinado previamente no Google Colab e empacotado como artefatos:
 
