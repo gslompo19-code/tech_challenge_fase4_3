@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 import joblib
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, f1_score
-from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+from sklearn.model_selection import TimeSeriesSplit
 from catboost import CatBoostClassifier
 
 
@@ -114,11 +114,9 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
         )
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
-    # patch escala
     df = corrige_escala_ultimo(df)
     df = df.sort_values("Data").dropna(subset=["Data", "Último"]).reset_index(drop=True)
 
-    # features
     df["var_pct"] = df["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         df[f"mm_{dias}"] = df["Último"].rolling(dias, min_periods=dias).mean()
@@ -195,6 +193,23 @@ def make_catboost():
     )
 
 
+def timeseries_cv_f1(model_factory, X, y, n_splits=5):
+    """
+    CV temporal "na mão" (compatível com sklearn 1.6+ e CatBoost).
+    Retorna lista de F1 por fold.
+    """
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    scores = []
+    for train_idx, val_idx in tscv.split(X):
+        Xtr, Xva = X[train_idx], X[val_idx]
+        ytr, yva = y[train_idx], y[val_idx]
+        m = model_factory()
+        m.fit(Xtr, ytr)
+        yp = m.predict(Xva)
+        scores.append(f1_score(yva, yp))
+    return scores
+
+
 def ensure_log():
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     header = ["timestamp", "source", "action", "selected_date", "pred_direction", "pred_proba", "threshold"]
@@ -226,7 +241,7 @@ def append_log(source, action, selected_date, pred_direction, pred_proba, thresh
 
 
 # =========================
-# UI / Sidebar
+# UI
 # =========================
 st.title("📈 IBOV Signal — Sistema Preditivo (Interativo)")
 
@@ -234,14 +249,12 @@ with st.sidebar:
     st.header("Dados")
     uploaded = st.file_uploader("Upload de CSV (opcional)", type=["csv"])
 
-    # Para bater com o colab:
-    test_n = st.number_input("Janela de teste (últimos N) — use 30 para comparar com Colab", min_value=10, max_value=260, value=30, step=10)
+    test_n = st.number_input("Janela de teste (últimos N) — use 30 p/ comparar com Colab", min_value=10, max_value=260, value=30, step=10)
+    threshold = st.slider("Threshold P(ALTA) ≥ t (use 0.50 p/ comparar)", 0.30, 0.70, 0.50, 0.01)
 
-    st.header("Decisão")
-    threshold = st.slider("Threshold P(ALTA) ≥ t (para comparar com Colab, use 0.50)", 0.30, 0.70, 0.50, 0.01)
-
-    st.header("Re-treino (IMPORTANTE p/ acurácia igual Colab)")
+    st.header("Re-treino")
     retrain = st.button("🔁 Re-treinar e salvar modelo + scaler (.pkl)")
+    run_cv = st.checkbox("Rodar CV temporal (F1) no re-treino", value=True)
 
     st.header("Logs")
     show_logs = st.checkbox("Mostrar logs", value=False)
@@ -279,55 +292,53 @@ y_train, y_test = y_raw[:split_idx], y_raw[split_idx:]
 
 
 # =========================
-# Treino / load (com re-treino)
+# Re-treino (para alinhar com Colab)
 # =========================
 if retrain:
     scaler = MinMaxScaler().fit(X_train_raw)
     X_train = scaler.transform(X_train_raw)
+
+    if run_cv:
+        with st.sidebar:
+            with st.spinner("Rodando CV temporal (F1)..."):
+                f1_scores = timeseries_cv_f1(make_catboost, X_train, y_train, n_splits=5)
+        st.sidebar.success(f"F1 médio (CV): {np.mean(f1_scores):.3f} (+/- {(np.std(f1_scores)*2):.3f})")
+
     model = make_catboost()
-
-    # CV no treino (igual colab, f1)
-    tscv = TimeSeriesSplit(n_splits=5)
-    cv_scores = cross_val_score(model, X_train, y_train, cv=tscv, scoring="f1")
-    st.sidebar.success(f"F1 médio (CV): {cv_scores.mean():.3f} (+/- {(cv_scores.std()*2):.3f})")
-
     model.fit(X_train, y_train)
 
-    # salva
     joblib.dump(model, MODEL_PATH)
     joblib.dump(scaler, SCALER_PATH)
-
-    st.sidebar.success("Salvei modelo_catboost.pkl e scaler_minmax.pkl (re-treinados com os dados atuais).")
-
-else:
-    # carrega, mas se falhar, treina
-    try:
-        scaler = joblib.load(SCALER_PATH) if os.path.exists(SCALER_PATH) else MinMaxScaler().fit(X_train_raw)
-    except:
-        scaler = MinMaxScaler().fit(X_train_raw)
-
-    X_train = scaler.transform(X_train_raw)
-    X_test = scaler.transform(X_test_raw)
-
-    try:
-        model = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else make_catboost()
-        if not os.path.exists(MODEL_PATH):
-            model.fit(X_train, y_train)
-    except:
-        model = make_catboost()
-        model.fit(X_train, y_train)
-
+    st.sidebar.success("Salvei modelo_catboost.pkl e scaler_minmax.pkl (re-treinados).")
 
 # =========================
-# Avaliação (deve bater com o Colab quando: test_n=30, threshold=0.5 e re-treino feito)
+# Load modelo/scaler (ou treina se faltar)
 # =========================
+try:
+    scaler = joblib.load(SCALER_PATH) if os.path.exists(SCALER_PATH) else MinMaxScaler().fit(X_train_raw)
+except:
+    scaler = MinMaxScaler().fit(X_train_raw)
+
+X_train = scaler.transform(X_train_raw)
 X_test = scaler.transform(X_test_raw)
-y_pred_test = model.predict(X_test)
 
+try:
+    model = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else make_catboost()
+    if not os.path.exists(MODEL_PATH):
+        model.fit(X_train, y_train)
+except:
+    model = make_catboost()
+    model.fit(X_train, y_train)
+
+
+# =========================
+# Avaliação
+# =========================
+y_pred_test = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred_test)
 f1t = f1_score(y_test, y_pred_test)
 
-st.subheader("✅ Avaliação (mesmo split temporal do Colab)")
+st.subheader("✅ Avaliação (mesmo split temporal do Colab quando N=30)")
 c1, c2, c3 = st.columns(3)
 c1.metric("Acurácia (teste)", f"{acc:.2%}")
 c2.metric("F1-score (teste)", f"{f1t:.3f}")
@@ -340,7 +351,7 @@ st.text(classification_report(y_test, y_pred_test))
 
 
 # =========================
-# Probabilidades/sinais no histórico (para Produto)
+# Probabilidades/sinais no histórico
 # =========================
 X_all_scaled = scaler.transform(X_raw)
 if hasattr(model, "predict_proba"):
@@ -396,10 +407,8 @@ fig = make_subplots(
     subplot_titles=("Preço + Sinal", "Probabilidade de ALTA (com threshold)")
 )
 
-fig.add_trace(
-    go.Scatter(x=df_plot["Data"], y=df_plot["Último"], mode="lines", name="Preço (Último)"),
-    row=1, col=1
-)
+fig.add_trace(go.Scatter(x=df_plot["Data"], y=df_plot["Último"], mode="lines", name="Preço (Último)"), row=1, col=1)
+
 fig.add_trace(
     go.Scatter(x=df_plot["Data"], y=np.where(pred_plot == 1, price_vals, np.nan), mode="markers",
                name="Sinal: ALTA", marker=dict(size=9, symbol="triangle-up")),
@@ -411,10 +420,7 @@ fig.add_trace(
     row=1, col=1
 )
 
-fig.add_trace(
-    go.Scatter(x=df_plot["Data"], y=proba_plot, mode="lines", fill="tozeroy", name="P(ALTA)"),
-    row=2, col=1
-)
+fig.add_trace(go.Scatter(x=df_plot["Data"], y=proba_plot, mode="lines", fill="tozeroy", name="P(ALTA)"), row=2, col=1)
 fig.add_hline(y=threshold, line_dash="dash", line_width=2, annotation_text=f"threshold={threshold:.2f}", row=2, col=1)
 
 fig.add_vline(x=pd.to_datetime(selected_date), line_width=2, row=1, col=1)
@@ -426,6 +432,7 @@ fig.update_yaxes(title_text="P(ALTA)", range=[0, 1], row=2, col=1)
 fig.update_xaxes(rangeslider_visible=True)
 
 st.plotly_chart(fig, use_container_width=True)
+
 
 # =========================
 # Logs
