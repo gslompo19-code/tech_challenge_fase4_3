@@ -196,10 +196,9 @@ def load_model_or_train(X_train, y_train):
 def ensure_log():
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     header = [
-        "timestamp", "source", "mode",
-        "selected_date", "selected_price",
-        "pred_direction", "pred_proba",
-        "threshold", "test_n", "acc_test", "f1_test"
+        "timestamp", "source", "action",
+        "selected_date", "pred_direction", "pred_proba",
+        "threshold", "window_backtest"
     ]
     if not os.path.exists(LOG_PATH) or os.path.getsize(LOG_PATH) == 0:
         pd.DataFrame(columns=header).to_csv(LOG_PATH, index=False)
@@ -214,54 +213,138 @@ def ensure_log():
         pd.DataFrame(columns=header).to_csv(LOG_PATH, index=False)
 
 
-def append_log(source, mode, selected_date, selected_price, pred_direction, pred_proba, threshold, test_n, acc, f1):
+def append_log(source, action, selected_date, pred_direction, pred_proba, threshold, window_backtest):
     ensure_log()
     row = pd.DataFrame([{
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "source": source,
-        "mode": mode,
+        "action": action,
         "selected_date": selected_date,
-        "selected_price": selected_price,
-        "pred_direction": int(pred_direction),
+        "pred_direction": int(pred_direction) if pred_direction is not None else np.nan,
         "pred_proba": float(pred_proba) if pred_proba is not None else np.nan,
         "threshold": float(threshold),
-        "test_n": int(test_n),
-        "acc_test": float(acc),
-        "f1_test": float(f1),
+        "window_backtest": int(window_backtest) if window_backtest is not None else np.nan,
     }])
     row.to_csv(LOG_PATH, mode="a", header=False, index=False)
 
 
-def predict_direction(model, X_scaled, threshold=0.5):
+def predict_proba_or_none(model, X_scaled):
     if hasattr(model, "predict_proba"):
-        p = float(model.predict_proba(X_scaled)[0, 1])
-        yhat = int(p >= threshold)
-        return yhat, p
-    yhat = int(model.predict(X_scaled)[0])
-    return yhat, None
+        return model.predict_proba(X_scaled)[:, 1]
+    return None
 
 
 # =========================
-# UI
+# Simulação futura por cenário
 # =========================
-st.title("📈 IBOV Signal — Interativo (Histórico + Simulação)")
-st.caption("Modo histórico (recomendado): selecione uma data e receba a tendência para o dia seguinte.")
+def simular_futuro_cenario(df_base: pd.DataFrame, dias_a_frente: int, retorno_diario: float):
+    df_sim = df_base.copy()
+
+    last_date = df_sim["Data"].iloc[-1]
+    last_close = float(df_sim["Último"].iloc[-1])
+
+    future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=dias_a_frente, freq="D")
+
+    future_close = []
+    price = last_close
+    for _ in range(dias_a_frente):
+        price = price * (1 + retorno_diario)
+        future_close.append(price)
+
+    future_df = pd.DataFrame({
+        "Data": future_dates,
+        "Último": future_close,
+        "Abertura": future_close,
+        "Máxima": future_close,
+        "Mínima": future_close,
+        "Vol.": [float(df_sim["Vol."].iloc[-1])] * dias_a_frente,
+    })
+
+    df_all = pd.concat([df_sim, future_df], ignore_index=True)
+    df_all = df_all.sort_values("Data").reset_index(drop=True)
+
+    # recalcula features (mesma lógica)
+    df_all["var_pct"] = df_all["Último"].pct_change()
+    for dias in [3, 7, 14, 21, 30]:
+        df_all[f"mm_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).mean()
+    for dias in [5, 10, 20]:
+        df_all[f"vol_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).std()
+
+    df_all["desvio_mm3"] = df_all["Último"] - df_all["mm_3"]
+    df_all["dia"] = df_all["Data"].dt.weekday
+    df_all["rsi"] = calculate_rsi(df_all["Último"])
+
+    macd, sinal, hist = macd_components(df_all["Último"])
+    df_all["macd"], df_all["sinal_macd"], df_all["hist_macd"] = macd, sinal, hist
+
+    bb_media = df_all["Último"].rolling(20, min_periods=20).mean()
+    bb_std = df_all["Último"].rolling(20, min_periods=20).std()
+    df_all["bb_media"] = bb_media
+    df_all["bb_std"] = bb_std
+    df_all["bb_sup"] = bb_media + 2 * bb_std
+    df_all["bb_inf"] = bb_media - 2 * bb_std
+    df_all["bb_largura"] = (df_all["bb_sup"] - df_all["bb_inf"]) / bb_media
+
+    tr1 = df_all["Máxima"] - df_all["Mínima"]
+    tr2 = (df_all["Máxima"] - df_all["Último"].shift(1)).abs()
+    tr3 = (df_all["Mínima"] - df_all["Último"].shift(1)).abs()
+    df_all["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df_all["ATR"] = df_all["TR"].rolling(14, min_periods=14).mean()
+
+    df_all["obv"] = obv_series(df_all)
+
+    df_all["ret_1d"] = df_all["Último"].pct_change()
+    df_all["log_ret"] = np.log(df_all["Último"]).diff()
+    df_all["ret_5d"] = df_all["Último"].pct_change(5)
+    df_all["rv_20"] = df_all["ret_1d"].rolling(20, min_periods=20).std()
+
+    df_all["atr_pct"] = df_all["ATR"] / df_all["Último"]
+    df_all["desvio_mm3_pct"] = (df_all["desvio_mm3"] / df_all["mm_3"]).replace([np.inf, -np.inf], np.nan)
+
+    df_all["vol_log"] = np.log(df_all["Vol."].clip(lower=1))
+    df_all["vol_ret"] = df_all["Vol."].pct_change().replace([np.inf, -np.inf], np.nan)
+
+    df_all["obv_diff"] = pd.Series(df_all["obv"]).diff()
+
+    df_all["z_close_20"] = zscore_roll(df_all["Último"], 20)
+    df_all["z_rsi_20"] = zscore_roll(df_all["rsi"], 20)
+    df_all["z_macd_20"] = zscore_roll(df_all["macd"], 20)
+
+    features = df_base.attrs.get("features_sugeridas", [])
+    df_future = df_all.tail(dias_a_frente).copy()
+    return df_future, features
+
+
+# =========================
+# Sidebar
+# =========================
+st.title("📈 IBOV Signal — Gráficos Interativos + Análises Temporais")
+st.caption("Selecione uma data para prever o dia seguinte, faça backtest em janelas e simule cenários futuros.")
 
 with st.sidebar:
-    st.header("Fonte de dados")
+    st.header("Dados")
     uploaded = st.file_uploader("Upload de CSV (opcional)", type=["csv"])
-    test_n = st.number_input("Janela de teste (últimos N)", min_value=10, max_value=200, value=30, step=5)
+    test_n = st.number_input("Janela de teste (últimos N)", min_value=10, max_value=260, value=60, step=10)
 
     st.header("Decisão")
     threshold = st.slider("Threshold P(ALTA) ≥ t", 0.30, 0.70, 0.50, 0.01)
 
-    st.header("Modo interativo")
-    mode = st.radio("Escolha o modo", ["Histórico (selecionar data)", "Manual (simulação)"], index=0)
+    st.header("Backtest (visual)")
+    backtest_window = st.number_input("Backtest: últimos N dias", min_value=60, max_value=600, value=250, step=10)
+
+    st.header("Rolling métricas")
+    rolling_window = st.number_input("Janela rolling (dias)", min_value=20, max_value=200, value=60, step=10)
+
+    st.header("Simulação futura")
+    fut_days = st.number_input("Dias à frente", min_value=1, max_value=30, value=10, step=1)
+    fut_ret = st.slider("Retorno diário do cenário (%)", -2.0, 2.0, 0.2, 0.1)
 
     st.header("Logs")
     show_logs = st.checkbox("Mostrar logs", value=False)
 
+# =========================
 # CSV
+# =========================
 if uploaded is not None:
     tmp_path = "tmp_upload.csv"
     with open(tmp_path, "wb") as f:
@@ -275,7 +358,6 @@ else:
         st.error(f"Não encontrei '{DEFAULT_CSV}' no repositório.")
         st.stop()
 
-# data
 df = carregar_dados(csv_path)
 features = df.attrs["features_sugeridas"]
 
@@ -296,310 +378,254 @@ X_test = scaler.transform(X_test_raw)
 
 model = load_model_or_train(X_train, y_train)
 
-# monitoramento
-y_pred_test = model.predict(X_test)
-acc = accuracy_score(y_test, y_pred_test)
-f1 = f1_score(y_test, y_pred_test)
+# =========================
+# Probabilidades e sinais (para gráficos)
+# =========================
+X_all_scaled = scaler.transform(X_raw)
+proba_all = predict_proba_or_none(model, X_all_scaled)
+if proba_all is None:
+    proba_all = model.predict(X_all_scaled).astype(float)
 
-# abas
-tab_produto, tab_monitor, tab_sobre = st.tabs(["🧠 Produto", "📊 Monitoramento", "📘 Sobre"])
+pred_all = (proba_all >= threshold).astype(int)
 
 # =========================
-# PRODUTO
+# Tabs
 # =========================
-with tab_produto:
-    st.subheader("Interação do usuário")
+tab_prod, tab_backtest, tab_future, tab_about = st.tabs(
+    ["🧠 Produto (interativo)", "📊 Backtest & Temporal", "🔮 Simulação Futura", "📘 Sobre"]
+)
 
-    c1, c2 = st.columns([1.4, 1.0])
+# ======================================================
+# TAB 1: PRODUTO INTERATIVO (selecionar data e prever t+1)
+# ======================================================
+with tab_prod:
+    st.subheader("Selecione uma data e veja a tendência para o dia seguinte")
 
-    with c1:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df["Data"], y=df["Último"], mode="lines", name="Último"))
-        fig.update_layout(height=380, margin=dict(l=10, r=10, t=30, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+    # datas disponíveis
+    date_options = df["Data"].dt.date.tolist()
+    default_date = df["Data"].iloc[-1].date()
+    selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1)
 
-    selected_date = None
-    selected_price = None
-    pred_dir = None
-    pred_proba = None
+    idx_list = df.index[df["Data"].dt.date == selected_date]
+    if len(idx_list) == 0:
+        st.error("Data não encontrada.")
+        st.stop()
 
-    with c2:
-        if mode == "Histórico (selecionar data)":
-            st.write("✅ **Modo recomendado**: usa o histórico real para calcular indicadores e prever o dia seguinte.")
-            # só permite selecionar datas que existam no df
-            date_options = df["Data"].dt.date.tolist()
-            default_date = df["Data"].iloc[-1].date()
-            selected_date = st.selectbox("Selecione uma data do histórico", options=date_options, index=len(date_options)-1)
+    i = int(idx_list[0])
 
-            idx = df.index[df["Data"].dt.date == selected_date]
-            if len(idx) == 0:
-                st.error("Data não encontrada no histórico.")
-            else:
-                i = int(idx[0])
-                selected_price = float(df.loc[i, "Último"])
+    # previsão "para o dia seguinte": usa features do dia selecionado
+    X_sel_raw = df.loc[[i], features].values
+    X_sel = scaler.transform(X_sel_raw)
+    p_sel = float(predict_proba_or_none(model, X_sel)[0]) if hasattr(model, "predict_proba") else float(model.predict(X_sel)[0])
+    y_sel = int(p_sel >= threshold)
 
-                # previsão para o dia seguinte usa features do dia selecionado
-                X_sel_raw = df.loc[[i], features].values
-                X_sel = scaler.transform(X_sel_raw)
-
-                pred_dir, pred_proba = predict_direction(model, X_sel, threshold)
-
-                # label
-                if pred_dir == 1:
-                    st.success("📈 Tendência prevista: **ALTA** (dia seguinte)")
-                else:
-                    st.warning("📉 Tendência prevista: **BAIXA** (dia seguinte)")
-
-                st.metric("Preço na data selecionada", f"{selected_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-                if pred_proba is not None:
-                    st.metric("Probabilidade de ALTA", f"{pred_proba:.2%}")
-                    st.caption(f"Threshold: {threshold:.2f}")
-
-                # log
-                append_log(
-                    source=source_name,
-                    mode="historico",
-                    selected_date=str(selected_date),
-                    selected_price=selected_price,
-                    pred_direction=pred_dir,
-                    pred_proba=pred_proba,
-                    threshold=threshold,
-                    test_n=test_n,
-                    acc=acc,
-                    f1=f1
-                )
-
-        else:
-            st.write("⚠️ **Modo simulação**: você altera o preço manualmente. Isso é uma aproximação.")
-            st.caption("Como o modelo usa indicadores (RSI/MACD/Bollinger), o jeito correto é selecionar uma data do histórico.")
-
-            # escolhe uma data base para pegar os indicadores reais e simular só o preço do dia
-            base_date = df["Data"].iloc[-1].date()
-            base_date = st.selectbox("Data base (para indicadores)", options=df["Data"].dt.date.tolist(), index=len(df)-1)
-
-            idx = df.index[df["Data"].dt.date == base_date]
-            i = int(idx[0])
-
-            base_price = float(df.loc[i, "Último"])
-            selected_price = st.number_input("Digite um preço (Último) para simular", min_value=0.0, value=base_price, step=10.0)
-
-            # Copia a linha de features e faz uma simulação mínima:
-            # - recalcula apenas ret_1d/log_ret/ret_5d e z_close_20 a partir do preço simulado (aproximado)
-            # - mantém os demais indicadores iguais ao do dia base (limitação assumida)
-            row = df.loc[i].copy()
-            prev_close = float(df.loc[i-1, "Último"]) if i > 0 else base_price
-
-            # atualiza colunas mínimas dependentes do preço
-            row["ret_1d"] = (selected_price / prev_close) - 1 if prev_close != 0 else 0.0
-            row["log_ret"] = np.log(selected_price) - np.log(prev_close) if prev_close > 0 and selected_price > 0 else 0.0
-
-            # ret_5d aproximado
-            if i >= 5:
-                close_5 = float(df.loc[i-5, "Último"])
-                row["ret_5d"] = (selected_price / close_5) - 1 if close_5 != 0 else 0.0
-            else:
-                row["ret_5d"] = np.nan
-
-            # z_close_20 aproximado usando média/std histórica até i (sem recalcular todo)
-            if i >= 20:
-                hist = df.loc[i-19:i, "Último"].astype(float).copy()
-                hist.iloc[-1] = selected_price
-                m = hist.mean()
-                sd = hist.std()
-                row["z_close_20"] = (selected_price - m) / sd if sd and not np.isnan(sd) else 0.0
-            else:
-                row["z_close_20"] = np.nan
-
-            # prepara X
-            X_sel_raw = pd.DataFrame([row])[features].values
-            # se houver NaN por falta de janela, impede predição
-            if np.isnan(X_sel_raw).any():
-                st.error("Não dá pra simular essa data: faltam janelas (ex.: 20 dias) para algumas features.")
-            else:
-                X_sel = scaler.transform(X_sel_raw)
-                pred_dir, pred_proba = predict_direction(model, X_sel, threshold)
-
-                if pred_dir == 1:
-                    st.success("📈 Tendência prevista (simulada): **ALTA**")
-                else:
-                    st.warning("📉 Tendência prevista (simulada): **BAIXA**")
-
-                if pred_proba is not None:
-                    st.metric("Probabilidade de ALTA", f"{pred_proba:.2%}")
-
-                append_log(
-                    source=source_name,
-                    mode="manual_simulacao",
-                    selected_date=str(base_date),
-                    selected_price=float(selected_price),
-                    pred_direction=pred_dir,
-                    pred_proba=pred_proba,
-                    threshold=threshold,
-                    test_n=test_n,
-                    acc=acc,
-                    f1=f1
-                )
-
-    st.divider()
-    st.subheader("Resumo")
-    st.write(
-        "🧠 **Produto**: o usuário escolhe uma data (ou simula preço) e recebe um **sinal** para o dia seguinte.\n"
-        "📌 **Recomendado**: modo histórico."
-    )
-
-# =========================
-# MONITORAMENTO
-# =========================
-with tab_monitor:
-    st.subheader("Saúde do modelo (monitoramento)")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Acurácia (teste)", f"{acc:.2%}")
-    c2.metric("F1 (teste)", f"{f1:.3f}")
-    c3.metric("Teste (últimos N)", f"{int(test_n)}")
-
-    if acc >= 0.75:
-        st.success("✅ Acurácia ≥ 75% na janela de teste configurada.")
+    if y_sel == 1:
+        st.success(f"📈 Tendência prevista para o dia seguinte: **ALTA** (P(ALTA)={p_sel:.2%})")
     else:
-        st.warning("⚠️ Acurácia < 75%. Tente N maior (ex.: 60/90) para uma medida mais estável.")
+        st.warning(f"📉 Tendência prevista para o dia seguinte: **BAIXA** (P(ALTA)={p_sel:.2%})")
+
+    append_log(source_name, "predict_by_date", str(selected_date), y_sel, p_sel, threshold, backtest_window)
+
+    # gráfico interativo: preço + prob + marcador na data selecionada
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df["Data"], y=df["Último"], mode="lines", name="Preço (Último)"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df["Data"], y=proba_all, mode="lines", name="Probabilidade de ALTA",
+        yaxis="y2"
+    ))
+
+    # marcadores de sinal
+    fig.add_trace(go.Scatter(
+        x=df["Data"], y=df["Último"],
+        mode="markers",
+        name="Sinal (ALTA=1)",
+        marker=dict(size=6),
+        text=[f"Sinal={int(s)} | P(ALTA)={float(p):.2%}" for s, p in zip(pred_all, proba_all)],
+        hovertemplate="%{x}<br>%{text}<br>Preço=%{y}<extra></extra>"
+    ))
+
+    # destaque da data selecionada
+    fig.add_vline(x=pd.to_datetime(selected_date), line_width=2)
+
+    fig.update_layout(
+        height=520,
+        margin=dict(l=10, r=10, t=30, b=10),
+        yaxis=dict(title="Preço"),
+        yaxis2=dict(title="P(ALTA)", overlaying="y", side="right", range=[0, 1]),
+        legend=dict(orientation="h"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # mini resumo temporal do ponto selecionado
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Preço na data", f"{float(df.loc[i,'Último']):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    c2.metric("P(ALTA)", f"{p_sel:.2%}")
+    c3.metric("Sinal", "ALTA" if y_sel == 1 else "BAIXA")
+
+# ======================================================
+# TAB 2: BACKTEST & ANÁLISES TEMPORAIS
+# ======================================================
+with tab_backtest:
+    st.subheader("Backtest visual (estratégia do sinal vs Buy & Hold)")
+
+    # janela do backtest no final do histórico
+    bt_n = int(min(backtest_window, len(df) - 2))
+    bt_df = df.iloc[-bt_n:].copy()
+
+    # alinhar previsões ao bt_df
+    start_idx = len(df) - bt_n
+    bt_proba = proba_all[start_idx:start_idx + bt_n]
+    bt_pred = pred_all[start_idx:start_idx + bt_n]
+    bt_real = bt_df["Alvo"].values.astype(int)
+
+    # retorno do próximo dia (t->t+1) baseado no preço
+    close = bt_df["Último"].astype(float).values
+    next_ret = np.zeros_like(close, dtype=float)
+    next_ret[:-1] = (close[1:] / close[:-1]) - 1
+    next_ret[-1] = 0.0
+
+    # estratégia: entra quando sinal=ALTA e sai no dia seguinte (retorno do próximo dia)
+    strat_ret = next_ret * (bt_pred.astype(float))
+    buyhold_ret = next_ret
+
+    bt_df["P(ALTA)"] = bt_proba
+    bt_df["Sinal"] = bt_pred
+    bt_df["Ret_Prox_Dia"] = next_ret
+    bt_df["Ret_Estrategia"] = strat_ret
+    bt_df["Acertou"] = (bt_pred == bt_real).astype(int)
+
+    # acumulados
+    bt_df["BH_Acumulado"] = (1 + pd.Series(buyhold_ret)).cumprod()
+    bt_df["Estrat_Acumulado"] = (1 + pd.Series(strat_ret)).cumprod()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Retorno acumulado (Buy&Hold)", f"{(bt_df['BH_Acumulado'].iloc[-1]-1):.2%}")
+    c2.metric("Retorno acumulado (Estratégia)", f"{(bt_df['Estrat_Acumulado'].iloc[-1]-1):.2%}")
+    c3.metric("Taxa de acerto (janela)", f"{bt_df['Acertou'].mean():.2%}")
+
+    # gráfico: acumulado
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(x=bt_df["Data"], y=bt_df["BH_Acumulado"], mode="lines", name="Buy & Hold (acum.)"))
+    fig2.add_trace(go.Scatter(x=bt_df["Data"], y=bt_df["Estrat_Acumulado"], mode="lines", name="Estratégia do Sinal (acum.)"))
+    fig2.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10))
+    st.plotly_chart(fig2, use_container_width=True)
 
     st.divider()
-    st.subheader("Matriz de confusão / relatório")
+    st.subheader("Métricas temporais (rolling)")
+
+    # rolling accuracy/f1 na janela do backtest
+    rw = int(min(rolling_window, len(bt_df) - 5))
+    roll_acc = bt_df["Acertou"].rolling(rw).mean()
+    # rolling f1 (aprox: calcular em janelas com função)
+    # para manter leve, calculamos f1 por janela com loop pequeno
+    roll_f1 = [np.nan] * len(bt_df)
+    for k in range(rw - 1, len(bt_df)):
+        y_true_w = bt_real[k - rw + 1:k + 1]
+        y_pred_w = bt_pred[k - rw + 1:k + 1]
+        roll_f1[k] = f1_score(y_true_w, y_pred_w)
+
+    fig3 = go.Figure()
+    fig3.add_trace(go.Scatter(x=bt_df["Data"], y=roll_acc, mode="lines", name=f"Acurácia rolling ({rw})"))
+    fig3.add_trace(go.Scatter(x=bt_df["Data"], y=roll_f1, mode="lines", name=f"F1 rolling ({rw})"))
+    fig3.update_layout(height=380, margin=dict(l=10, r=10, t=30, b=10), yaxis=dict(range=[0, 1]))
+    st.plotly_chart(fig3, use_container_width=True)
+
+    st.divider()
+    st.subheader("Real vs Previsto (comunicação da previsão)")
+    table = bt_df[["Data", "Último", "P(ALTA)", "Sinal", "Alvo", "Acertou"]].copy()
+    table["Resultado"] = np.where(table["Acertou"] == 1, "✔️", "❌")
+    st.dataframe(table.tail(120), use_container_width=True)
+
+    st.subheader("Matriz de confusão / relatório (janela de teste)")
+    y_pred_test = model.predict(X_test)
     st.write(confusion_matrix(y_test, y_pred_test))
     st.text(classification_report(y_test, y_pred_test))
+    st.write(f"Acurácia teste (últimos {int(test_n)}): {accuracy_score(y_test, y_pred_test):.2%} | F1: {f1_score(y_test, y_pred_test):.3f}")
 
-    if show_logs:
-        st.divider()
-        st.subheader("Logs")
-        ensure_log()
-        log_df = pd.read_csv(LOG_PATH, on_bad_lines="skip")
-        st.dataframe(log_df.tail(50), use_container_width=True)
-def simular_futuro_cenario(df_base: pd.DataFrame, dias_a_frente: int, retorno_diario: float):
-    """
-    Simula um caminho de preços para datas futuras e recalcula as features.
-    retorno_diario em decimal (ex.: 0.002 = +0,2% ao dia)
-    """
-    df_sim = df_base.copy()
+# ======================================================
+# TAB 3: SIMULAÇÃO FUTURA
+# ======================================================
+with tab_future:
+    st.subheader("Simulação futura por cenário (criativo e honesto)")
+    st.caption(
+        "Como datas futuras não têm histórico real, o app permite simular um caminho de preços "
+        "com retorno diário constante e gerar sinais condicionais ao cenário."
+    )
 
-    last_date = df_sim["Data"].iloc[-1]
-    last_close = float(df_sim["Último"].iloc[-1])
+    retorno_diario = float(fut_ret) / 100.0
+    df_future, fcols = simular_futuro_cenario(df, int(fut_days), retorno_diario)
 
-    # cria datas futuras (dias corridos)
-    future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=dias_a_frente, freq="D")
+    X_future_raw = df_future[fcols].values
+    # se ainda tiver NaN (por causa de janelas), evita quebrar
+    if np.isnan(X_future_raw).any():
+        st.warning("Para esse cenário/data, algumas features ficaram sem janela (NaN). Aumente histórico ou diminua dias.")
+        st.stop()
 
-    # cria preços futuros por retorno constante
-    future_close = []
-    price = last_close
-    for _ in range(dias_a_frente):
-        price = price * (1 + retorno_diario)
-        future_close.append(price)
+    X_future = scaler.transform(X_future_raw)
+    future_proba = predict_proba_or_none(model, X_future)
+    if future_proba is None:
+        future_proba = model.predict(X_future).astype(float)
 
-    # adiciona linhas futuras com colunas mínimas
-    future_df = pd.DataFrame({
-        "Data": future_dates,
-        "Último": future_close,
-        # aprox: mantém Abertura/Máxima/Mínima iguais ao Último (simples)
-        "Abertura": future_close,
-        "Máxima": future_close,
-        "Mínima": future_close,
-        # volume: mantém último volume conhecido (simples)
-        "Vol.": [float(df_sim["Vol."].iloc[-1])] * dias_a_frente,
+    future_pred = (future_proba >= threshold).astype(int)
+
+    out = pd.DataFrame({
+        "Data": df_future["Data"].dt.date,
+        "Preço Simulado": df_future["Último"].astype(float),
+        "P(ALTA)": future_proba.astype(float),
+        "Sinal": np.where(future_pred == 1, "ALTA", "BAIXA"),
     })
 
-    # concatena e recalcula TODAS as features com as mesmas regras do seu pipeline
-    df_all = pd.concat([df_sim, future_df], ignore_index=True)
+    append_log(source_name, "future_scenario", str(df["Data"].iloc[-1].date()), int(future_pred[-1]), float(future_proba[-1]), threshold, backtest_window)
 
-    # Recalcular features (repetindo a lógica do carregar_dados, mas agora df já é numérico)
-    df_all = df_all.sort_values("Data").reset_index(drop=True)
+    # gráfico futuro: preço + prob
+    figf = go.Figure()
+    figf.add_trace(go.Scatter(x=out["Data"], y=out["Preço Simulado"], mode="lines+markers", name="Preço Simulado"))
+    figf.add_trace(go.Scatter(x=out["Data"], y=out["P(ALTA)"], mode="lines+markers", name="P(ALTA)", yaxis="y2"))
+    figf.update_layout(
+        height=450,
+        margin=dict(l=10, r=10, t=30, b=10),
+        yaxis=dict(title="Preço Simulado"),
+        yaxis2=dict(title="P(ALTA)", overlaying="y", side="right", range=[0, 1]),
+        legend=dict(orientation="h"),
+    )
+    st.plotly_chart(figf, use_container_width=True)
+    st.dataframe(out, use_container_width=True)
 
-    df_all["var_pct"] = df_all["Último"].pct_change()
-    for dias in [3, 7, 14, 21, 30]:
-        df_all[f"mm_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).mean()
-    for dias in [5, 10, 20]:
-        df_all[f"vol_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).std()
-
-    df_all["desvio_mm3"] = df_all["Último"] - df_all["mm_3"]
-    df_all["dia"] = df_all["Data"].dt.weekday
-    df_all["rsi"] = calculate_rsi(df_all["Último"])
-    macd, sinal, hist = macd_components(df_all["Último"])
-    df_all["macd"], df_all["sinal_macd"], df_all["hist_macd"] = macd, sinal, hist
-
-    bb_media = df_all["Último"].rolling(20, min_periods=20).mean()
-    bb_std = df_all["Último"].rolling(20, min_periods=20).std()
-    df_all["bb_media"] = bb_media
-    df_all["bb_std"] = bb_std
-    df_all["bb_sup"] = bb_media + 2*bb_std
-    df_all["bb_inf"] = bb_media - 2*bb_std
-    df_all["bb_largura"] = (df_all["bb_sup"] - df_all["bb_inf"]) / bb_media
-
-    tr1 = df_all["Máxima"] - df_all["Mínima"]
-    tr2 = (df_all["Máxima"] - df_all["Último"].shift(1)).abs()
-    tr3 = (df_all["Mínima"] - df_all["Último"].shift(1)).abs()
-    df_all["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df_all["ATR"] = df_all["TR"].rolling(14, min_periods=14).mean()
-
-    # OBV recalculado (usa Vol. e direção do preço)
-    df_all["obv"] = obv_series(df_all)
-
-    df_all["ret_1d"] = df_all["Último"].pct_change()
-    df_all["log_ret"] = np.log(df_all["Último"]).diff()
-    df_all["ret_5d"] = df_all["Último"].pct_change(5)
-    df_all["rv_20"] = df_all["ret_1d"].rolling(20, min_periods=20).std()
-
-    df_all["atr_pct"] = df_all["ATR"] / df_all["Último"]
-    df_all["desvio_mm3_pct"] = (df_all["desvio_mm3"] / df_all["mm_3"]).replace([np.inf, -np.inf], np.nan)
-
-    df_all["vol_log"] = np.log(df_all["Vol."].clip(lower=1))
-    df_all["vol_ret"] = df_all["Vol."].pct_change().replace([np.inf, -np.inf], np.nan)
-
-    df_all["obv_diff"] = pd.Series(df_all["obv"]).diff()
-
-    df_all["z_close_20"] = zscore_roll(df_all["Último"], 20)
-    df_all["z_rsi_20"] = zscore_roll(df_all["rsi"], 20)
-    df_all["z_macd_20"] = zscore_roll(df_all["macd"], 20)
-
-    features = df_base.attrs.get("features_sugeridas")
-    if not features:
-        features = [
-            "ret_1d","log_ret","ret_5d","rv_20",
-            "atr_pct","bb_largura","desvio_mm3_pct",
-            "vol_log","vol_ret","obv_diff",
-            "rsi","macd","sinal_macd","hist_macd",
-            "dia","z_close_20","z_rsi_20","z_macd_20"
-        ]
-
-    # pega somente as linhas futuras
-    df_future = df_all.tail(dias_a_frente).copy()
-    return df_future, features
-df_future, features = simular_futuro_cenario(df, dias_a_frente=10, retorno_diario=0.002)
-
-X_future_raw = df_future[features].values
-X_future = scaler.transform(X_future_raw)
-
-proba = model.predict_proba(X_future)[:, 1]
-pred = (proba >= threshold).astype(int)
-
-out = pd.DataFrame({
-    "Data": df_future["Data"].dt.date,
-    "Preço Simulado": df_future["Último"].astype(float),
-    "Prob(ALTA)": proba,
-    "Sinal": np.where(pred == 1, "ALTA", "BAIXA")
-})
-
-# =========================
-# SOBRE
-# =========================
-with tab_sobre:
+# ======================================================
+# TAB 4: SOBRE
+# ======================================================
+with tab_about:
     st.subheader("O que o modelo prevê")
-    st.write("**Alvo:** 1 se `Último(t+1) > Último(t)` senão 0.")
+    st.write("**Alvo:** 1 se `Último(t+1) > Último(t)`, senão 0.")
+    st.write("**Uso no app:** gerar um sinal (ALTA/BAIXA) com probabilidade e comunicar isso com análises temporais.")
 
-    st.subheader("Como prevenimos vazamento")
+    st.subheader("Prevenção de vazamento")
     st.write("- Split temporal (treino antes, teste nos últimos N)\n- Scaler com fit apenas no treino")
 
     st.subheader("Features usadas")
     st.write(features)
 
-    st.subheader("Sugestão para o GitHub (documento à parte)")
-    st.write("Crie um `MODEL_CARD.md` explicando objetivo, dados, estratégia, validação e limitações.")
+    st.subheader("Arquivos recomendados no repositório")
+    st.write(
+        "- `README.md` (como rodar + link do app)\n"
+        "- `MODEL_CARD.md` (estratégia, validação, limitações)\n"
+        "- `modelo_catboost.pkl` e `scaler_minmax.pkl` (artefatos)\n"
+        "- `Dados Ibovespa (2).csv` (dataset)"
+    )
 
-
+# =========================
+# Logs
+# =========================
+if show_logs:
+    st.divider()
+    st.subheader("Logs do app")
+    ensure_log()
+    try:
+        log_df = pd.read_csv(LOG_PATH, on_bad_lines="skip")
+        st.dataframe(log_df.tail(100), use_container_width=True)
+    except Exception as e:
+        st.warning(f"Falha ao ler logs: {e}")
