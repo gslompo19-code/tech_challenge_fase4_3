@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 import joblib
 from sklearn.preprocessing import MinMaxScaler
@@ -263,7 +264,6 @@ def simular_futuro_cenario(df_base: pd.DataFrame, dias_a_frente: int, retorno_di
     df_all = pd.concat([df_sim, future_df], ignore_index=True)
     df_all = df_all.sort_values("Data").reset_index(drop=True)
 
-    # recalcula features (mesma lógica)
     df_all["var_pct"] = df_all["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         df_all[f"mm_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).mean()
@@ -401,9 +401,7 @@ tab_prod, tab_backtest, tab_future, tab_about = st.tabs(
 with tab_prod:
     st.subheader("Selecione uma data e veja a tendência para o dia seguinte")
 
-    # datas disponíveis
     date_options = df["Data"].dt.date.tolist()
-    default_date = df["Data"].iloc[-1].date()
     selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1)
 
     idx_list = df.index[df["Data"].dt.date == selected_date]
@@ -413,10 +411,14 @@ with tab_prod:
 
     i = int(idx_list[0])
 
-    # previsão "para o dia seguinte": usa features do dia selecionado
     X_sel_raw = df.loc[[i], features].values
     X_sel = scaler.transform(X_sel_raw)
-    p_sel = float(predict_proba_or_none(model, X_sel)[0]) if hasattr(model, "predict_proba") else float(model.predict(X_sel)[0])
+
+    if hasattr(model, "predict_proba"):
+        p_sel = float(model.predict_proba(X_sel)[0, 1])
+    else:
+        p_sel = float(model.predict(X_sel)[0])
+
     y_sel = int(p_sel >= threshold)
 
     if y_sel == 1:
@@ -426,41 +428,121 @@ with tab_prod:
 
     append_log(source_name, "predict_by_date", str(selected_date), y_sel, p_sel, threshold, backtest_window)
 
-    # gráfico interativo: preço + prob + marcador na data selecionada
-    fig = go.Figure()
+    # =========================
+    # GRÁFICO MAIS INTUITIVO (2 painéis + fundo por sinal)
+    # =========================
+    with st.expander("Ajustes do gráfico", expanded=True):
+        view_n = st.slider("Mostrar últimos N pontos", 60, min(1500, len(df)), 400, 20)
 
-    fig.add_trace(go.Scatter(
-        x=df["Data"], y=df["Último"], mode="lines", name="Preço (Último)"
-    ))
+    df_plot = df.tail(int(view_n)).copy()
+    start_idx_plot = len(df) - len(df_plot)
 
-    fig.add_trace(go.Scatter(
-        x=df["Data"], y=proba_all, mode="lines", name="Probabilidade de ALTA",
-        yaxis="y2"
-    ))
+    proba_plot = proba_all[start_idx_plot:start_idx_plot + len(df_plot)]
+    pred_plot = pred_all[start_idx_plot:start_idx_plot + len(df_plot)]
+    price_vals = df_plot["Último"].astype(float).values
 
-    # marcadores de sinal
-    fig.add_trace(go.Scatter(
-        x=df["Data"], y=df["Último"],
-        mode="markers",
-        name="Sinal (ALTA=1)",
-        marker=dict(size=6),
-        text=[f"Sinal={int(s)} | P(ALTA)={float(p):.2%}" for s, p in zip(pred_all, proba_all)],
-        hovertemplate="%{x}<br>%{text}<br>Preço=%{y}<extra></extra>"
-    ))
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.68, 0.32],
+        subplot_titles=("Preço + Sinal", "Probabilidade de ALTA (com threshold)")
+    )
 
-    # destaque da data selecionada
-    fig.add_vline(x=pd.to_datetime(selected_date), line_width=2)
+    # Preço
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot["Data"], y=df_plot["Último"],
+            mode="lines",
+            name="Preço (Último)",
+            hovertemplate="Data=%{x|%Y-%m-%d}<br>Preço=%{y:.2f}<extra></extra>",
+        ),
+        row=1, col=1
+    )
+
+    # Marcadores: ALTA
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot["Data"],
+            y=np.where(pred_plot == 1, price_vals, np.nan),
+            mode="markers",
+            name="Sinal: ALTA",
+            marker=dict(size=9, symbol="triangle-up"),
+            hovertemplate="Data=%{x|%Y-%m-%d}<br>Sinal=ALTA<br>Preço=%{y:.2f}<extra></extra>",
+        ),
+        row=1, col=1
+    )
+
+    # Marcadores: BAIXA
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot["Data"],
+            y=np.where(pred_plot == 0, price_vals, np.nan),
+            mode="markers",
+            name="Sinal: BAIXA",
+            marker=dict(size=8, symbol="triangle-down"),
+            hovertemplate="Data=%{x|%Y-%m-%d}<br>Sinal=BAIXA<br>Preço=%{y:.2f}<extra></extra>",
+        ),
+        row=1, col=1
+    )
+
+    # Probabilidade (área)
+    fig.add_trace(
+        go.Scatter(
+            x=df_plot["Data"], y=proba_plot,
+            mode="lines",
+            fill="tozeroy",
+            name="P(ALTA)",
+            hovertemplate="Data=%{x|%Y-%m-%d}<br>P(ALTA)=%{y:.2%}<extra></extra>",
+        ),
+        row=2, col=1
+    )
+
+    # Linha do threshold
+    fig.add_hline(
+        y=threshold,
+        line_width=2,
+        line_dash="dash",
+        annotation_text=f"threshold={threshold:.2f}",
+        row=2, col=1
+    )
+
+    # Fundo por blocos (evita 1 faixa por ponto)
+    blocks = []
+    curr = int(pred_plot[0])
+    block_start = df_plot["Data"].iloc[0]
+    for k in range(1, len(df_plot)):
+        if int(pred_plot[k]) != curr:
+            block_end = df_plot["Data"].iloc[k - 1]
+            blocks.append((block_start, block_end, curr))
+            curr = int(pred_plot[k])
+            block_start = df_plot["Data"].iloc[k]
+    blocks.append((block_start, df_plot["Data"].iloc[-1], curr))
+
+    for (x0, x1, s) in blocks:
+        fig.add_vrect(
+            x0=x0, x1=x1,
+            fillcolor="rgba(0,180,0,0.06)" if s == 1 else "rgba(220,0,0,0.05)",
+            line_width=0,
+            row=1, col=1
+        )
+
+    # Linha vertical da data selecionada (nos 2 painéis)
+    fig.add_vline(x=pd.to_datetime(selected_date), line_width=2, row=1, col=1)
+    fig.add_vline(x=pd.to_datetime(selected_date), line_width=2, row=2, col=1)
 
     fig.update_layout(
-        height=520,
-        margin=dict(l=10, r=10, t=30, b=10),
-        yaxis=dict(title="Preço"),
-        yaxis2=dict(title="P(ALTA)", overlaying="y", side="right", range=[0, 1]),
+        height=650,
+        margin=dict(l=10, r=10, t=60, b=10),
         legend=dict(orientation="h"),
     )
+    fig.update_yaxes(title_text="Preço", row=1, col=1)
+    fig.update_yaxes(title_text="P(ALTA)", range=[0, 1], row=2, col=1)
+    fig.update_xaxes(rangeslider_visible=True)
+
     st.plotly_chart(fig, use_container_width=True)
 
-    # mini resumo temporal do ponto selecionado
+    # mini cards
     c1, c2, c3 = st.columns(3)
     c1.metric("Preço na data", f"{float(df.loc[i,'Último']):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
     c2.metric("P(ALTA)", f"{p_sel:.2%}")
@@ -472,23 +554,19 @@ with tab_prod:
 with tab_backtest:
     st.subheader("Backtest visual (estratégia do sinal vs Buy & Hold)")
 
-    # janela do backtest no final do histórico
     bt_n = int(min(backtest_window, len(df) - 2))
     bt_df = df.iloc[-bt_n:].copy()
 
-    # alinhar previsões ao bt_df
     start_idx = len(df) - bt_n
     bt_proba = proba_all[start_idx:start_idx + bt_n]
     bt_pred = pred_all[start_idx:start_idx + bt_n]
     bt_real = bt_df["Alvo"].values.astype(int)
 
-    # retorno do próximo dia (t->t+1) baseado no preço
     close = bt_df["Último"].astype(float).values
     next_ret = np.zeros_like(close, dtype=float)
     next_ret[:-1] = (close[1:] / close[:-1]) - 1
     next_ret[-1] = 0.0
 
-    # estratégia: entra quando sinal=ALTA e sai no dia seguinte (retorno do próximo dia)
     strat_ret = next_ret * (bt_pred.astype(float))
     buyhold_ret = next_ret
 
@@ -498,7 +576,6 @@ with tab_backtest:
     bt_df["Ret_Estrategia"] = strat_ret
     bt_df["Acertou"] = (bt_pred == bt_real).astype(int)
 
-    # acumulados
     bt_df["BH_Acumulado"] = (1 + pd.Series(buyhold_ret)).cumprod()
     bt_df["Estrat_Acumulado"] = (1 + pd.Series(strat_ret)).cumprod()
 
@@ -507,7 +584,6 @@ with tab_backtest:
     c2.metric("Retorno acumulado (Estratégia)", f"{(bt_df['Estrat_Acumulado'].iloc[-1]-1):.2%}")
     c3.metric("Taxa de acerto (janela)", f"{bt_df['Acertou'].mean():.2%}")
 
-    # gráfico: acumulado
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(x=bt_df["Data"], y=bt_df["BH_Acumulado"], mode="lines", name="Buy & Hold (acum.)"))
     fig2.add_trace(go.Scatter(x=bt_df["Data"], y=bt_df["Estrat_Acumulado"], mode="lines", name="Estratégia do Sinal (acum.)"))
@@ -517,11 +593,9 @@ with tab_backtest:
     st.divider()
     st.subheader("Métricas temporais (rolling)")
 
-    # rolling accuracy/f1 na janela do backtest
     rw = int(min(rolling_window, len(bt_df) - 5))
     roll_acc = bt_df["Acertou"].rolling(rw).mean()
-    # rolling f1 (aprox: calcular em janelas com função)
-    # para manter leve, calculamos f1 por janela com loop pequeno
+
     roll_f1 = [np.nan] * len(bt_df)
     for k in range(rw - 1, len(bt_df)):
         y_true_w = bt_real[k - rw + 1:k + 1]
@@ -544,7 +618,10 @@ with tab_backtest:
     y_pred_test = model.predict(X_test)
     st.write(confusion_matrix(y_test, y_pred_test))
     st.text(classification_report(y_test, y_pred_test))
-    st.write(f"Acurácia teste (últimos {int(test_n)}): {accuracy_score(y_test, y_pred_test):.2%} | F1: {f1_score(y_test, y_pred_test):.3f}")
+    st.write(
+        f"Acurácia teste (últimos {int(test_n)}): {accuracy_score(y_test, y_pred_test):.2%} | "
+        f"F1: {f1_score(y_test, y_pred_test):.3f}"
+    )
 
 # ======================================================
 # TAB 3: SIMULAÇÃO FUTURA
@@ -560,14 +637,15 @@ with tab_future:
     df_future, fcols = simular_futuro_cenario(df, int(fut_days), retorno_diario)
 
     X_future_raw = df_future[fcols].values
-    # se ainda tiver NaN (por causa de janelas), evita quebrar
     if np.isnan(X_future_raw).any():
         st.warning("Para esse cenário/data, algumas features ficaram sem janela (NaN). Aumente histórico ou diminua dias.")
         st.stop()
 
     X_future = scaler.transform(X_future_raw)
-    future_proba = predict_proba_or_none(model, X_future)
-    if future_proba is None:
+
+    if hasattr(model, "predict_proba"):
+        future_proba = model.predict_proba(X_future)[:, 1]
+    else:
         future_proba = model.predict(X_future).astype(float)
 
     future_pred = (future_proba >= threshold).astype(int)
@@ -579,19 +657,21 @@ with tab_future:
         "Sinal": np.where(future_pred == 1, "ALTA", "BAIXA"),
     })
 
-    append_log(source_name, "future_scenario", str(df["Data"].iloc[-1].date()), int(future_pred[-1]), float(future_proba[-1]), threshold, backtest_window)
+    append_log(
+        source_name,
+        "future_scenario",
+        str(df["Data"].iloc[-1].date()),
+        int(future_pred[-1]),
+        float(future_proba[-1]),
+        threshold,
+        backtest_window
+    )
 
-    # gráfico futuro: preço + prob
     figf = go.Figure()
     figf.add_trace(go.Scatter(x=out["Data"], y=out["Preço Simulado"], mode="lines+markers", name="Preço Simulado"))
-    figf.add_trace(go.Scatter(x=out["Data"], y=out["P(ALTA)"], mode="lines+markers", name="P(ALTA)", yaxis="y2"))
-    figf.update_layout(
-        height=450,
-        margin=dict(l=10, r=10, t=30, b=10),
-        yaxis=dict(title="Preço Simulado"),
-        yaxis2=dict(title="P(ALTA)", overlaying="y", side="right", range=[0, 1]),
-        legend=dict(orientation="h"),
-    )
+    figf.add_trace(go.Scatter(x=out["Data"], y=out["P(ALTA)"], mode="lines+markers", name="P(ALTA)"))
+    figf.add_hline(y=threshold, line_dash="dash", line_width=2, annotation_text=f"threshold={threshold:.2f}")
+    figf.update_layout(height=450, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"), yaxis2=dict(range=[0, 1]))
     st.plotly_chart(figf, use_container_width=True)
     st.dataframe(out, use_container_width=True)
 
