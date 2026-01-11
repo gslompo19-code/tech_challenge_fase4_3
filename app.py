@@ -377,8 +377,12 @@ def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
 # =========================
 # Backtest completo (opcional)
 # =========================
-@st.cache_data
-def compute_backtest_full(df_feat: pd.DataFrame, features: list, model, scaler, threshold: float) -> pd.DataFrame:
+# ✅ CORREÇÃO: não passamos model/scaler em função cacheada (dá UnhashableParamError).
+# Pegamos model+scaler de dentro, via load_model_and_scaler() que está em cache_resource.
+@st.cache_data(show_spinner="Gerando backtest completo...")
+def compute_backtest_full(df_feat: pd.DataFrame, features: list, threshold: float) -> pd.DataFrame:
+    model, scaler = load_model_and_scaler()
+
     X_all = df_feat[features].values
     y_all = df_feat["Alvo"].values
     pred_all, proba_all = predict_proba_batch(model, scaler, X_all, threshold)
@@ -517,8 +521,6 @@ with tab_produto:
     matches = df.index[df["Data"].dt.date == selected_date].tolist()
     if not matches:
         st.warning("Data não encontrada no histórico processado (pode ter sido filtrada por NaN nas features).")
-        # alternativa: mostrar a data mais próxima
-        nearest_idx = int((df["Data"].dt.date - selected_date).abs().idxmin()) if hasattr(df["Data"].dt.date, "abs") else None
         st.stop()
 
     idx = matches[0]
@@ -581,8 +583,6 @@ with tab_produto:
 
     # Auto-log
     if register_log_auto:
-        # Para evitar duplicar a cada rerun do Streamlit, registramos apenas quando o usuário clica no botão “Registrar”
-        # OU quando a data muda (controlado por sessão).
         if "last_logged_key" not in st.session_state:
             st.session_state["last_logged_key"] = None
 
@@ -625,7 +625,8 @@ with tab_backtest:
         st.caption("O cálculo é cacheado. Se mudar o threshold, gere novamente.")
 
     if run_bt:
-        bt_full = compute_backtest_full(df, features, model, scaler, threshold)
+        # ✅ CORREÇÃO: não passamos model/scaler para a função cacheada
+        bt_full = compute_backtest_full(df, features, threshold)
 
         # Métricas rápidas (no histórico inteiro)
         acc_full = (bt_full["Alvo_real"] == bt_full["Pred"]).mean()
