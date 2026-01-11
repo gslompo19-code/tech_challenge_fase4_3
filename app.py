@@ -174,7 +174,7 @@ def carregar_dados(caminho_csv):
     df["desvio_mm3_pct"] = (df["desvio_mm3"] / df["mm_3"]).replace([np.inf, -np.inf], np.nan)
 
     df["vol_log"] = np.log(df["Vol."].clip(lower=1))
-    df["vol_ret"] = df["Vol."].pct_change().replace([np.inf, -npinf], np.nan)
+    df["vol_ret"] = df["Vol."].pct_change().replace([np.inf, -np.inf], np.nan)
 
     df["obv_diff"] = pd.Series(df["obv"]).diff()
 
