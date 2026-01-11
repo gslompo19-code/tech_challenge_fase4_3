@@ -78,15 +78,41 @@ def zscore_roll(s: pd.Series, w: int = 20) -> pd.Series:
     return (s - m) / sd
 
 
+def corrige_escala_ultimo(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Correção de escala baseada na vizinhança temporal (igual ao seu ajuste do Colab).
+    Se detectar 'quebra' forte (curr < 20% do prev), tenta multiplicar por 10/100/1000
+    até voltar para uma faixa plausível (70%..130% do valor anterior).
+    """
+    df = df.copy()
+    df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+    df["Último"] = pd.to_numeric(df["Último"], errors="coerce")
+    df = df.dropna(subset=["Data", "Último"]).sort_values("Data").reset_index(drop=True)
+
+    for i in range(1, len(df)):
+        prev = float(df.loc[i - 1, "Último"])
+        curr = float(df.loc[i, "Último"])
+
+        if curr < prev * 0.2:
+            for fator in [10, 100, 1000]:
+                if prev * 0.7 < curr * fator < prev * 1.3:
+                    df.loc[i, "Último"] = curr * fator
+                    break
+
+    return df
+
+
 def carregar_dados(caminho_csv: str) -> pd.DataFrame:
+    # 1) Ler
     df = pd.read_csv(caminho_csv)
     df.columns = df.columns.str.strip()
 
+    # 2) Data
     df["Data"] = pd.to_datetime(df["Data"], format="%d.%m.%Y", errors="coerce")
     if df["Data"].isna().mean() > 0.5:
         df["Data"] = pd.to_datetime(df["Data"], dayfirst=True, errors="coerce")
-    df = df.sort_values("Data").dropna(subset=["Data"])
 
+    # 3) Converter volume e preços (locale BR -> float)
     df["Vol."] = df["Vol."].apply(volume_to_float)
     for coluna in ["Último", "Abertura", "Máxima", "Mínima"]:
         df[coluna] = (
@@ -96,6 +122,13 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
         )
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
+    # 4) Aplicar correção de escala no "Último" (seu patch do notebook)
+    df = corrige_escala_ultimo(df)
+
+    # 5) Ordenar/limpar
+    df = df.sort_values("Data").dropna(subset=["Data", "Último"]).reset_index(drop=True)
+
+    # 6) Features base
     df["var_pct"] = df["Último"].pct_change()
 
     for dias in [3, 7, 14, 21, 30]:
@@ -111,6 +144,7 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
     macd, sinal, hist = macd_components(df["Último"])
     df["macd"], df["sinal_macd"], df["hist_macd"] = macd, sinal, hist
 
+    # Bandas de Bollinger (20)
     bb_media = df["Último"].rolling(20, min_periods=20).mean()
     bb_std = df["Último"].rolling(20, min_periods=20).std()
     df["bb_media"] = bb_media
@@ -119,16 +153,19 @@ def carregar_dados(caminho_csv: str) -> pd.DataFrame:
     df["bb_inf"] = bb_media - 2 * bb_std
     df["bb_largura"] = (df["bb_sup"] - df["bb_inf"]) / bb_media
 
+    # ATR (14)
     tr1 = df["Máxima"] - df["Mínima"]
     tr2 = (df["Máxima"] - df["Último"].shift(1)).abs()
     tr3 = (df["Mínima"] - df["Último"].shift(1)).abs()
     df["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["ATR"] = df["TR"].rolling(14, min_periods=14).mean()
 
+    # OBV e Alvo
     df["obv"] = obv_series(df)
     df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
     df = df.iloc[:-1].copy()
 
+    # Transformações mais estacionárias
     df["ret_1d"] = df["Último"].pct_change()
     df["log_ret"] = np.log(df["Último"]).diff()
     df["ret_5d"] = df["Último"].pct_change(5)
@@ -264,6 +301,7 @@ def simular_futuro_cenario(df_base: pd.DataFrame, dias_a_frente: int, retorno_di
     df_all = pd.concat([df_sim, future_df], ignore_index=True)
     df_all = df_all.sort_values("Data").reset_index(drop=True)
 
+    # features (mesma lógica)
     df_all["var_pct"] = df_all["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         df_all[f"mm_{dias}"] = df_all["Último"].rolling(dias, min_periods=dias).mean()
@@ -449,7 +487,6 @@ with tab_prod:
         subplot_titles=("Preço + Sinal", "Probabilidade de ALTA (com threshold)")
     )
 
-    # Preço
     fig.add_trace(
         go.Scatter(
             x=df_plot["Data"], y=df_plot["Último"],
@@ -460,7 +497,6 @@ with tab_prod:
         row=1, col=1
     )
 
-    # Marcadores: ALTA
     fig.add_trace(
         go.Scatter(
             x=df_plot["Data"],
@@ -473,7 +509,6 @@ with tab_prod:
         row=1, col=1
     )
 
-    # Marcadores: BAIXA
     fig.add_trace(
         go.Scatter(
             x=df_plot["Data"],
@@ -486,7 +521,6 @@ with tab_prod:
         row=1, col=1
     )
 
-    # Probabilidade (área)
     fig.add_trace(
         go.Scatter(
             x=df_plot["Data"], y=proba_plot,
@@ -498,7 +532,6 @@ with tab_prod:
         row=2, col=1
     )
 
-    # Linha do threshold
     fig.add_hline(
         y=threshold,
         line_width=2,
@@ -507,7 +540,6 @@ with tab_prod:
         row=2, col=1
     )
 
-    # Fundo por blocos (evita 1 faixa por ponto)
     blocks = []
     curr = int(pred_plot[0])
     block_start = df_plot["Data"].iloc[0]
@@ -527,7 +559,6 @@ with tab_prod:
             row=1, col=1
         )
 
-    # Linha vertical da data selecionada (nos 2 painéis)
     fig.add_vline(x=pd.to_datetime(selected_date), line_width=2, row=1, col=1)
     fig.add_vline(x=pd.to_datetime(selected_date), line_width=2, row=2, col=1)
 
@@ -542,7 +573,6 @@ with tab_prod:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # mini cards
     c1, c2, c3 = st.columns(3)
     c1.metric("Preço na data", f"{float(df.loc[i,'Último']):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
     c2.metric("P(ALTA)", f"{p_sel:.2%}")
@@ -671,7 +701,7 @@ with tab_future:
     figf.add_trace(go.Scatter(x=out["Data"], y=out["Preço Simulado"], mode="lines+markers", name="Preço Simulado"))
     figf.add_trace(go.Scatter(x=out["Data"], y=out["P(ALTA)"], mode="lines+markers", name="P(ALTA)"))
     figf.add_hline(y=threshold, line_dash="dash", line_width=2, annotation_text=f"threshold={threshold:.2f}")
-    figf.update_layout(height=450, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"), yaxis2=dict(range=[0, 1]))
+    figf.update_layout(height=450, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
     st.plotly_chart(figf, use_container_width=True)
     st.dataframe(out, use_container_width=True)
 
