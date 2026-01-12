@@ -1,4 +1,4 @@
-tenho esse código: import os
+import os
 from datetime import timedelta
 import numpy as np
 import pandas as pd
