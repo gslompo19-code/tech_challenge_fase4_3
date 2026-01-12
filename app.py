@@ -1,11 +1,11 @@
 import os
 from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
 import joblib
 
 
@@ -17,6 +17,30 @@ st.set_page_config(page_title="IBOV Signal — Sistema Preditivo", layout="wide"
 DEFAULT_CSV = "Dados Ibovespa (2).csv"
 MODEL_PATH = "modelo_catboost.pkl"
 SCALER_PATH = "scaler_minmax.pkl"
+
+
+# =========================
+# MÉTRICAS FIXAS (DO COLAB) — SEM RETREINO
+# =========================
+METRICAS_COLAB = {
+    "modelo": "CatBoostClassifier (treinado no Colab / Fase 2)",
+    "janela_validacao": "Holdout temporal: últimos 30 registros como teste",
+    "cv_f1_mean": 0.531,
+    "cv_f1_pm": 0.083,
+    "acc_train": 0.8203,
+    "acc_test": 0.8000,
+    "overfit": 0.0203,
+    "cm": [[13, 3],
+           [3, 11]],
+    "report": """precision    recall  f1-score   support
+
+0       0.81      0.81      0.81        16
+1       0.79      0.79      0.79        14
+
+accuracy                           0.80        30
+macro avg       0.80      0.80      0.80        30
+weighted avg    0.80      0.80      0.80        30"""
+}
 
 
 # =========================
@@ -120,13 +144,7 @@ def carregar_dados(caminho_csv):
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
     # ===== PATCH DO COLAB (IMPORTANTE) =====
-    # Corrigir escala do Último antes de qualquer feature
     df = correcao_escala_por_vizinhanca(df)
-
-    # Garantir que as outras colunas continuam alinhadas
-    # (se elas também tiverem problemas de escala, o correto seria tratá-las, mas seu patch é apenas para "Último")
-    # Reindexando pelas datas existentes após o patch:
-    # Se "Abertura/Máxima/Mínima" tiverem NaN onde "Último" existe, seguimos com NaN e o dropna das features remove.
     df = df.sort_values("Data").reset_index(drop=True)
 
     # 3) Features base
@@ -173,7 +191,8 @@ def carregar_dados(caminho_csv):
     df["desvio_mm3_pct"] = (df["desvio_mm3"] / df["mm_3"]).replace([np.inf, -np.inf], np.nan)
 
     df["vol_log"] = np.log(df["Vol."].clip(lower=1))
-    df["vol_ret"] = df["Vol."].pct_change().replace([np.inf, -npinf], np.nan)
+    # ✅ CORREÇÃO DO BUG (-npinf -> -np.inf)
+    df["vol_ret"] = df["Vol."].pct_change().replace([np.inf, -np.inf], np.nan)
 
     df["obv_diff"] = pd.Series(df["obv"]).diff()
 
@@ -252,7 +271,11 @@ def make_signal_chart(df_plot, pred, proba, threshold, title):
         go.Scatter(x=dates, y=proba, mode="lines", fill="tozeroy", name="P(ALTA)"),
         row=2, col=1
     )
-    fig.add_hline(y=threshold, line_dash="dash", line_width=2, annotation_text=f"threshold={threshold:.2f}", row=2, col=1)
+    fig.add_hline(
+        y=threshold, line_dash="dash", line_width=2,
+        annotation_text=f"threshold={threshold:.2f}",
+        row=2, col=1
+    )
 
     fig.update_layout(
         height=650,
@@ -274,6 +297,29 @@ def predict_proba_batch(model, scaler, X, threshold):
         proba = model.predict(Xs).astype(float)
     pred = (proba >= threshold).astype(int)
     return pred, proba
+
+
+def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
+    cm = np.array(cm, dtype=int)
+    x = [f"Prev: {labels[0]}", f"Prev: {labels[1]}"]
+    y = [f"Real: {labels[0]}", f"Real: {labels[1]}"]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=cm,
+            x=x,
+            y=y,
+            text=cm,
+            texttemplate="%{text}",
+            hovertemplate="",
+        )
+    )
+    fig.update_layout(
+        title="Matriz de Confusão (valores do Colab)",
+        height=420,
+        margin=dict(l=10, r=10, t=50, b=10)
+    )
+    return fig
 
 
 # =========================
@@ -306,7 +352,9 @@ except Exception as e:
 df, features = load_df_and_features(DEFAULT_CSV)
 
 # Tabs
-tab_produto, tab_futuro, tab_diag = st.tabs(["🧠 Produto", "🔮 Simulação futura (30 dias)", "🔎 Diagnóstico"])
+tab_produto, tab_futuro, tab_diag = st.tabs(
+    ["🧠 Produto", "🔮 Simulação futura (data alvo)", "🔎 Diagnóstico (métricas)"]
+)
 
 with tab_produto:
     st.subheader("Produto: selecione uma data e obtenha a tendência do dia seguinte")
@@ -328,7 +376,10 @@ with tab_produto:
         st.warning(f"📉 Tendência prevista (dia seguinte): **BAIXA** — P(ALTA)={p:.2%}")
 
     st.write("Linha do dia selecionado (já com `Último` corrigido):")
-    st.dataframe(df.loc[[idx], ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct", "Alvo"]], use_container_width=True)
+    st.dataframe(
+        df.loc[[idx], ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct", "Alvo"]],
+        use_container_width=True
+    )
 
     df_plot = df.tail(int(view_n)).copy()
     X_plot = df_plot[features].values
@@ -338,7 +389,7 @@ with tab_produto:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab_futuro:
-    st.subheader("Simulação futura (cenário) por 30 dias")
+    st.subheader("Simulação futura para uma DATA ALVO (cenário)")
     st.write(
         "Como não existe preço real futuro no dataset, aqui é uma **simulação de cenário**: "
         "você define um retorno diário e o modelo classifica ALTA/BAIXA para cada dia simulado."
@@ -350,6 +401,13 @@ with tab_futuro:
 
     st.info(f"Último ponto: {last_date.date()} — Último={last_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
+    st.markdown("### 🎯 Escolha a data alvo (quantos dias à frente)")
+    max_days = 120
+    dias_a_frente = st.slider("Dias à frente", 1, max_days, 30, 1)
+    data_alvo = last_date + timedelta(days=int(dias_a_frente))
+    st.write(f"📅 Data alvo: **{data_alvo.date()}**")
+
+    st.markdown("### 📌 Defina o cenário")
     mode = st.selectbox("Cenário", ["Constante", "Constante + Ruído", "Aleatório (volatilidade)"])
     if mode == "Constante":
         mu = st.number_input("Retorno diário (%)", value=0.20, step=0.05) / 100.0
@@ -364,7 +422,7 @@ with tab_futuro:
     seed = st.number_input("Seed", value=42, step=1)
     np.random.seed(int(seed))
 
-    horizon = 30
+    horizon = int(dias_a_frente)
     future_dates = [last_date + timedelta(days=i) for i in range(1, horizon + 1)]
     rets = np.random.normal(loc=mu, scale=sigma, size=horizon)
 
@@ -373,7 +431,6 @@ with tab_futuro:
         prices.append(prices[-1] * (1.0 + r))
     future_prices = prices[1:]
 
-    # Monta DF “mínimo” para recalcular features
     base = df[["Data", "Vol.", "Último", "Abertura", "Máxima", "Mínima"]].copy()
     fut = pd.DataFrame({
         "Data": future_dates,
@@ -385,11 +442,9 @@ with tab_futuro:
     })
 
     full = pd.concat([base, fut], ignore_index=True).sort_values("Data").reset_index(drop=True)
-
-    # Aplicar o patch também no full (evita “pente” se o cenário gerar algo estranho)
     full = correcao_escala_por_vizinhanca(full)
 
-    # Recalcular features (mesma lógica)
+    # Recalcular features no "full"
     full["var_pct"] = full["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         full[f"mm_{dias}"] = full["Último"].rolling(dias, min_periods=dias).mean()
@@ -440,7 +495,7 @@ with tab_futuro:
     future_block = future_block.dropna(subset=features)
 
     if len(future_block) == 0:
-        st.error("Sem features suficientes para os 30 dias. Ajuste o cenário.")
+        st.error("Sem features suficientes para a data alvo. Aumente o horizonte ou ajuste o cenário.")
         st.stop()
 
     Xf = future_block[features].values
@@ -449,6 +504,16 @@ with tab_futuro:
     future_block["P(ALTA)"] = proba_f
     future_block["Sinal"] = np.where(pred_f == 1, "ALTA", "BAIXA")
 
+    # Resultado para a data alvo (última linha simulada válida)
+    sinal_alvo = int(pred_f[-1])
+    proba_alvo = float(proba_f[-1])
+    data_real_alvo = pd.to_datetime(future_block["Data"].iloc[-1]).date()
+
+    if sinal_alvo == 1:
+        st.success(f"📈 Tendência prevista para **{data_real_alvo}**: **ALTA** — P(ALTA)={proba_alvo:.2%}")
+    else:
+        st.warning(f"📉 Tendência prevista para **{data_real_alvo}**: **BAIXA** — P(ALTA)={proba_alvo:.2%}")
+
     st.dataframe(future_block[["Data", "Último", "P(ALTA)", "Sinal"]], use_container_width=True)
 
     fig2 = make_signal_chart(
@@ -456,18 +521,54 @@ with tab_futuro:
         pred=pred_f,
         proba=proba_f,
         threshold=threshold,
-        title="Simulação futura (30 dias) — sinais do modelo",
+        title="Simulação futura — sinais do modelo (até a data alvo)",
     )
     st.plotly_chart(fig2, use_container_width=True)
 
 with tab_diag:
-    st.subheader("Diagnóstico (para confirmar que o 'pente' foi corrigido)")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Linhas", len(df))
-    c2.metric("Data inicial", str(df["Data"].iloc[0].date()))
-    c3.metric("Data final", str(df["Data"].iloc[-1].date()))
+    st.subheader("Painel explícito de métricas (fixas do Colab — sem re-treino)")
 
-    st.write("Resumo do preço corrigido (`Último`):")
+    st.caption(f"Modelo: {METRICAS_COLAB['modelo']}")
+    st.caption(f"Validação: {METRICAS_COLAB['janela_validacao']}")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Acurácia Treino", f"{METRICAS_COLAB['acc_train']*100:.2f}%")
+    c2.metric("Acurácia Teste", f"{METRICAS_COLAB['acc_test']*100:.2f}%")
+    c3.metric("Overfitting", f"{METRICAS_COLAB['overfit']*100:.2f}%")
+    c4.metric("F1 (CV)", f"{METRICAS_COLAB['cv_f1_mean']:.3f} ± {METRICAS_COLAB['cv_f1_pm']:.3f}")
+
+    st.divider()
+
+    cm = METRICAS_COLAB["cm"]
+    cm_df = pd.DataFrame(
+        cm,
+        index=["Real: Queda (0)", "Real: Alta (1)"],
+        columns=["Prev: Queda (0)", "Prev: Alta (1)"]
+    )
+
+    colA, colB = st.columns([1, 1.2])
+    with colA:
+        st.write("Matriz de confusão (tabela):")
+        st.dataframe(cm_df, use_container_width=True)
+
+    with colB:
+        st.write("Matriz de confusão (gráfico):")
+        st.plotly_chart(plot_confusion_matrix(cm), use_container_width=True)
+
+    st.divider()
+
+    st.write("Classification report (do Colab):")
+    st.code(METRICAS_COLAB["report"])
+
+    st.divider()
+
+    st.write("Diagnóstico do dataset carregado (para auditoria):")
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Linhas válidas (features)", len(df))
+    d2.metric("Data inicial", str(df["Data"].iloc[0].date()))
+    d3.metric("Data final", str(df["Data"].iloc[-1].date()))
+
+    st.write("Resumo do `Último` (corrigido):")
     st.write(df["Último"].describe())
 
     st.write("Últimos 10 pontos (Data, Último):")
