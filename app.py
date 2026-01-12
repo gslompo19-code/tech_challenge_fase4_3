@@ -1,6 +1,5 @@
 tenho esse código: import os
 from datetime import timedelta
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -472,4 +471,4 @@ with tab_diag:
     st.write(df["Último"].describe())
 
     st.write("Últimos 10 pontos (Data, Último):")
-    st.dataframe(df[["Data", "Último"]].tail(10), use_container_width=True) eu consigo colocar uma simulação futura para o usuário colocar uma data e uma previsão e a tendência?
+    st.dataframe(df[["Data", "Último"]].tail(10), use_container_width=True)
