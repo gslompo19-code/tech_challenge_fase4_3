@@ -217,90 +217,93 @@ def load_df_and_features(csv_path):
 # =========================
 def make_signal_chart(df_plot, pred, proba, threshold, title):
     price_vals = df_plot["Último"].astype(float).values
-    dates = df_plot["Data"]
+    dates = pd.to_datetime(df_plot["Data"])
 
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-        row_heights=[0.68, 0.32],
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.14,          # ✅ mais espaço entre os painéis
+        row_heights=[0.62, 0.38],       # ✅ segundo painel maior
         subplot_titles=("Preço (corrigido) + Sinal", "Probabilidade P(ALTA)")
     )
 
+    # --- Preço ---
     fig.add_trace(
-        go.Scatter(x=dates, y=price_vals, mode="lines", name="Preço (Último)"),
+        go.Scatter(
+            x=dates, y=price_vals,
+            mode="lines",
+            name="Preço (Último)",
+            line=dict(width=2)
+        ),
         row=1, col=1
     )
 
+    # --- Marcadores de sinal (menores para não “poluir”) ---
     fig.add_trace(
         go.Scatter(
-            x=dates, y=np.where(pred == 1, price_vals, np.nan),
-            mode="markers", name="ALTA", marker=dict(size=9, symbol="triangle-up")
+            x=dates,
+            y=np.where(pred == 1, price_vals, np.nan),
+            mode="markers",
+            name="ALTA",
+            marker=dict(size=7, symbol="triangle-up"),
         ),
         row=1, col=1
     )
     fig.add_trace(
         go.Scatter(
-            x=dates, y=np.where(pred == 0, price_vals, np.nan),
-            mode="markers", name="BAIXA", marker=dict(size=8, symbol="triangle-down")
+            x=dates,
+            y=np.where(pred == 0, price_vals, np.nan),
+            mode="markers",
+            name="BAIXA",
+            marker=dict(size=7, symbol="triangle-down"),
         ),
         row=1, col=1
     )
 
+    # --- Probabilidade ---
     fig.add_trace(
-        go.Scatter(x=dates, y=proba, mode="lines", fill="tozeroy", name="P(ALTA)"),
+        go.Scatter(
+            x=dates,
+            y=proba,
+            mode="lines",
+            name="P(ALTA)",
+            line=dict(width=2),
+            fill="tozeroy",
+        ),
         row=2, col=1
     )
+
+    # --- Threshold ---
     fig.add_hline(
-        y=threshold, line_dash="dash", line_width=2,
+        y=threshold,
+        line_dash="dash",
+        line_width=2,
         annotation_text=f"threshold={threshold:.2f}",
+        annotation_position="right",
         row=2, col=1
     )
 
+    # ✅ só 1 rangeslider (no eixo X compartilhado)
+    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
+    fig.update_xaxes(rangeslider_visible=True, row=2, col=1)
+
+    # ✅ layout geral (evita sobreposição)
     fig.update_layout(
-        height=650,
-        margin=dict(l=10, r=10, t=60, b=10),
-        legend=dict(orientation="h"),
-        title=title,
+        height=700,
+        title=dict(text=title, x=0.01, xanchor="left"),
+        margin=dict(l=20, r=20, t=90, b=30),  # ✅ mais topo p/ título+legenda
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,         # ✅ legenda logo acima do gráfico, sem bater no título
+            xanchor="left",
+            x=0.01,
+        ),
     )
+
     fig.update_yaxes(title_text="Preço", row=1, col=1)
     fig.update_yaxes(title_text="P(ALTA)", range=[0, 1], row=2, col=1)
-    fig.update_xaxes(rangeslider_visible=True)
-    return fig
 
-
-def predict_proba_batch(model, scaler, X, threshold):
-    X = np.asarray(X, dtype=float)
-    # ✅ mata NaN/inf antes do scaler (evita ValueError)
-    if not np.isfinite(X).all():
-        raise ValueError("Features com NaN/inf. A simulação precisa de mais histórico (janelas 20/30) ou cenário menos agressivo.")
-    Xs = scaler.transform(X)
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(Xs)[:, 1]
-    else:
-        proba = model.predict(Xs).astype(float)
-    pred = (proba >= threshold).astype(int)
-    return pred, proba
-
-
-def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
-    cm = np.array(cm, dtype=int)
-    x = [f"Prev: {labels[0]}", f"Prev: {labels[1]}"]
-    y = [f"Real: {labels[0]}", f"Real: {labels[1]}"]
-
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=cm,
-            x=x,
-            y=y,
-            text=cm,
-            texttemplate="%{text}",
-            hovertemplate="",
-        )
-    )
-    fig.update_layout(
-        title="Matriz de Confusão (valores do Colab)",
-        height=420,
-        margin=dict(l=10, r=10, t=50, b=10)
-    )
     return fig
 
 
