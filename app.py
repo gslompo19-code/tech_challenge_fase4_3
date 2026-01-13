@@ -1,7 +1,5 @@
-```python
 import os
-import json
-from datetime import timedelta, datetime
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -21,11 +19,6 @@ DEFAULT_CSV = "Dados Ibovespa (2).csv"
 MODEL_PATH = "modelo_catboost.pkl"
 SCALER_PATH = "scaler_minmax.pkl"
 
-# Logs (simples e robusto)
-LOG_DIR = "logs"
-LOG_CSV_PATH = os.path.join(LOG_DIR, "usage_log.csv")
-LOG_JSONL_PATH = os.path.join(LOG_DIR, "usage_log.jsonl")
-
 
 # =========================
 # MÉTRICAS FIXAS (do Colab) — SEM RETREINO
@@ -34,12 +27,12 @@ METRICAS_COLAB = {
     "modelo": "CatBoostClassifier (treinado no Colab / Fase 2)",
     "janela_validacao": "Holdout temporal: últimos 30 registros como teste",
     "cv_f1_mean": 0.531,
-    "cv_f1_pm": 0.083,
+    "cv_f1_pm": 0.083,  # (+/- 0.083) conforme seu print
     "acc_train": 0.8203,
     "acc_test": 0.8000,
     "overfit": 0.0203,
     "cm": [[13, 3],
-           [3, 11]],
+           [3, 11]],  # Confusão do seu relatório do Colab
     "report": """precision    recall  f1-score   support
 
 0       0.81      0.81      0.81        16
@@ -49,42 +42,6 @@ accuracy                           0.80        30
 macro avg       0.80      0.80      0.80        30
 weighted avg    0.80      0.80      0.80        30"""
 }
-
-
-# =========================
-# LOG DE USO (CSV + JSONL) - best effort
-# =========================
-def _ensure_log_dir():
-    os.makedirs(LOG_DIR, exist_ok=True)
-
-
-def _get_session_id() -> str:
-    if "session_id" not in st.session_state:
-        st.session_state.session_id = f"sess_{np.random.randint(10**8, 10**9)}"
-    return st.session_state.session_id
-
-
-def append_usage_log(event: dict):
-    try:
-        _ensure_log_dir()
-        payload = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "session_id": _get_session_id(),
-            **event,
-        }
-
-        # JSONL
-        with open(LOG_JSONL_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-        # CSV
-        df_row = pd.DataFrame([payload])
-        if os.path.exists(LOG_CSV_PATH):
-            df_row.to_csv(LOG_CSV_PATH, mode="a", header=False, index=False, encoding="utf-8")
-        else:
-            df_row.to_csv(LOG_CSV_PATH, mode="w", header=True, index=False, encoding="utf-8")
-    except Exception:
-        pass
 
 
 # =========================
@@ -99,7 +56,7 @@ def volume_to_float(value):
         value = value[:-1] if suffix in factor else value
         try:
             return float(value.replace(".", "").replace(",", ".")) * multiplier
-        except Exception:
+        except:
             return np.nan
     return np.nan
 
@@ -124,14 +81,12 @@ def macd_components(prices, short=12, long=26, signal=9):
 
 
 def obv_series(data):
-    vol = pd.to_numeric(data["Vol."], errors="coerce").fillna(0.0).values
-    close = pd.to_numeric(data["Último"], errors="coerce").values
-    obv = [0.0]
+    obv = [0]
     for i in range(1, len(data)):
-        if close[i] > close[i - 1]:
-            obv.append(obv[-1] + vol[i])
-        elif close[i] < close[i - 1]:
-            obv.append(obv[-1] - vol[i])
+        if data["Último"].iat[i] > data["Último"].iat[i - 1]:
+            obv.append(obv[-1] + data["Vol."].iat[i])
+        elif data["Último"].iat[i] < data["Último"].iat[i - 1]:
+            obv.append(obv[-1] - data["Vol."].iat[i])
         else:
             obv.append(obv[-1])
     return obv
@@ -144,23 +99,33 @@ def zscore_roll(s: pd.Series, w: int = 20) -> pd.Series:
 
 
 def correcao_escala_por_vizinhanca(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Patch idêntico ao seu Colab para corrigir 'Último' quando vem 10x/100x/1000x menor.
+    """
     df = df.copy()
+
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df["Último"] = pd.to_numeric(df["Último"], errors="coerce")
+
     df = df.dropna(subset=["Data", "Último"]).sort_values("Data").reset_index(drop=True)
 
     for i in range(1, len(df)):
         prev = df.loc[i - 1, "Último"]
         curr = df.loc[i, "Último"]
-        if pd.notna(prev) and pd.notna(curr) and curr < prev * 0.2:
+
+        if curr < prev * 0.2:
             for fator in [10, 100, 1000]:
                 if prev * 0.7 < curr * fator < prev * 1.3:
                     df.loc[i, "Último"] = curr * fator
                     break
+
     return df
 
 
 def carregar_dados(caminho_csv):
+    """
+    Pipeline do Colab + patch de correção de escala (para evitar gráfico 'pente').
+    """
     df = pd.read_csv(caminho_csv)
     df.columns = df.columns.str.strip()
     df["Data"] = pd.to_datetime(df["Data"], format="%d.%m.%Y", errors="coerce")
@@ -176,6 +141,7 @@ def carregar_dados(caminho_csv):
         )
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
+    # PATCH (igual Colab)
     df = correcao_escala_por_vizinhanca(df)
     df = df.sort_values("Data").reset_index(drop=True)
 
@@ -187,7 +153,6 @@ def carregar_dados(caminho_csv):
 
     df["desvio_mm3"] = df["Último"] - df["mm_3"]
     df["dia"] = df["Data"].dt.weekday
-
     df["rsi"] = calculate_rsi(df["Último"])
     macd, sinal, hist = macd_components(df["Último"])
     df["macd"], df["sinal_macd"], df["hist_macd"] = macd, sinal, hist
@@ -207,7 +172,6 @@ def carregar_dados(caminho_csv):
     df["ATR"] = df["TR"].rolling(14, min_periods=14).mean()
 
     df["obv"] = obv_series(df)
-
     df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
     df = df.iloc[:-1].copy()
 
@@ -235,7 +199,6 @@ def carregar_dados(caminho_csv):
         "rsi", "macd", "sinal_macd", "hist_macd",
         "dia", "z_close_20", "z_rsi_20", "z_macd_20"
     ]
-
     df = df.dropna(subset=features_sugeridas + ["Alvo"]).copy()
     df.attrs["features_sugeridas"] = features_sugeridas
     return df
@@ -263,19 +226,57 @@ def load_df_and_features(csv_path):
 
 
 # =========================
-# Predição
+# Gráficos
 # =========================
+def make_signal_chart(df_plot, pred, proba, threshold, title):
+    price_vals = df_plot["Último"].astype(float).values
+    dates = df_plot["Data"]
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+        row_heights=[0.68, 0.32],
+        subplot_titles=("Preço (corrigido) + Sinal", "Probabilidade P(ALTA)")
+    )
+
+    fig.add_trace(
+        go.Scatter(x=dates, y=price_vals, mode="lines", name="Preço (Último)"),
+        row=1, col=1
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=np.where(pred == 1, price_vals, np.nan),
+            mode="markers", name="ALTA", marker=dict(size=9, symbol="triangle-up")
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=np.where(pred == 0, price_vals, np.nan),
+            mode="markers", name="BAIXA", marker=dict(size=8, symbol="triangle-down")
+        ),
+        row=1, col=1
+    )
+
+    fig.add_trace(
+        go.Scatter(x=dates, y=proba, mode="lines", fill="tozeroy", name="P(ALTA)"),
+        row=2, col=1
+    )
+    fig.add_hline(y=threshold, line_dash="dash", line_width=2, annotation_text=f"threshold={threshold:.2f}", row=2, col=1)
+
+    fig.update_layout(
+        height=650,
+        margin=dict(l=10, r=10, t=60, b=10),
+        legend=dict(orientation="h"),
+        title=title,
+    )
+    fig.update_yaxes(title_text="Preço", row=1, col=1)
+    fig.update_yaxes(title_text="P(ALTA)", range=[0, 1], row=2, col=1)
+    fig.update_xaxes(rangeslider_visible=True)
+    return fig
+
+
 def predict_proba_batch(model, scaler, X, threshold):
-    X = np.asarray(X, dtype=float)
-    if X.ndim == 1:
-        X = X.reshape(1, -1)
-
-    if X.shape[0] == 0:
-        return np.array([], dtype=int), np.array([], dtype=float)
-
-    if not np.isfinite(X).all():
-        raise ValueError("Ainda há NaN/Inf em X. Limpe antes de chamar predict_proba_batch().")
-
     Xs = scaler.transform(X)
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(Xs)[:, 1]
@@ -285,84 +286,6 @@ def predict_proba_batch(model, scaler, X, threshold):
     return pred, proba
 
 
-# =========================
-# Gráficos (sem sobreposição do rangeslider + sem vermelho)
-# =========================
-def make_signal_chart(df_plot, pred, proba, threshold, title):
-    price_vals = df_plot["Último"].astype(float).values
-    dates = df_plot["Data"]
-
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.08,
-        row_heights=[0.70, 0.30],
-        subplot_titles=("Preço (corrigido) + Sinal", "Probabilidade P(ALTA)")
-    )
-
-    # Preço
-    fig.add_trace(
-        go.Scatter(
-            x=dates, y=price_vals,
-            mode="lines",
-            name="Preço (Último)",
-            line=dict(width=2),
-        ),
-        row=1, col=1
-    )
-
-    # Marcadores de ALTA
-    fig.add_trace(
-        go.Scatter(
-            x=dates,
-            y=np.where(np.asarray(pred) == 1, price_vals, np.nan),
-            mode="markers",
-            name="ALTA",
-            marker=dict(size=8, symbol="triangle-up"),
-        ),
-        row=1, col=1
-    )
-
-    # Probabilidade (sem vermelho)
-    fig.add_trace(
-        go.Scatter(
-            x=dates, y=np.asarray(proba, dtype=float),
-            mode="lines",
-            name="P(ALTA)",
-            line=dict(width=2),
-            fill="tozeroy",
-            fillcolor="rgba(0, 123, 255, 0.18)",
-        ),
-        row=2, col=1
-    )
-
-    # Threshold
-    fig.add_hline(
-        y=threshold, line_dash="dash", line_width=2,
-        annotation_text=f"threshold={threshold:.2f}",
-        row=2, col=1
-    )
-
-    # Layout
-    fig.update_layout(
-        height=560,
-        margin=dict(l=10, r=10, t=60, b=10),
-        legend=dict(orientation="h"),
-        title=title,
-    )
-    fig.update_yaxes(title_text="Preço", row=1, col=1)
-    fig.update_yaxes(title_text="P(ALTA)", range=[0, 1], row=2, col=1)
-
-    # ✅ rangeslider só no primeiro eixo X (evita a faixa duplicada/ sobreposição)
-    fig.update_xaxes(rangeslider_visible=False)
-    fig.update_layout(
-        xaxis=dict(rangeslider=dict(visible=True)),
-        xaxis2=dict(rangeslider=dict(visible=False)),
-    )
-
-    return fig
-
-
 def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
     cm = np.array(cm, dtype=int)
     x = [f"Prev: {labels[0]}", f"Prev: {labels[1]}"]
@@ -370,8 +293,11 @@ def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
 
     fig = go.Figure(
         data=go.Heatmap(
-            z=cm, x=x, y=y,
-            text=cm, texttemplate="%{text}",
+            z=cm,
+            x=x,
+            y=y,
+            text=cm,
+            texttemplate="%{text}",
             hovertemplate="",
         )
     )
@@ -394,17 +320,6 @@ with st.sidebar:
     view_n = st.slider("Janela do gráfico (últimos N)", 60, 1500, 400, 20)
     st.caption("Patch de escala do `Último` aplicado (corrige gráfico 'pente').")
 
-    st.divider()
-    st.subheader("Log de uso")
-    st.caption("Arquivos: logs/usage_log.csv e logs/usage_log.jsonl")
-
-    if os.path.exists(LOG_CSV_PATH):
-        with open(LOG_CSV_PATH, "rb") as f:
-            st.download_button("⬇️ Baixar log CSV", data=f, file_name="usage_log.csv", mime="text/csv")
-    if os.path.exists(LOG_JSONL_PATH):
-        with open(LOG_JSONL_PATH, "rb") as f:
-            st.download_button("⬇️ Baixar log JSONL", data=f, file_name="usage_log.jsonl", mime="application/jsonl")
-
 if not os.path.exists(DEFAULT_CSV):
     st.error(
         f"Não encontrei `{DEFAULT_CSV}` no repositório. "
@@ -420,19 +335,42 @@ except Exception as e:
 
 df, features = load_df_and_features(DEFAULT_CSV)
 
-# Abas invertidas
-tab_produto, tab_historico, tab_diag = st.tabs(
-    ["🧠 Produto (Simulação futura)", "📅 Histórico (data do dataset)", "🔎 Diagnóstico (métricas)"]
-)
+tab_produto, tab_futuro, tab_diag = st.tabs(["🧠 Produto", "🔮 Simulação futura (data manual)", "🔎 Diagnóstico (métricas)"])
 
-# =========================
-# TAB 1 — PRODUTO (SIMULAÇÃO FUTURA)
-# =========================
 with tab_produto:
-    st.subheader("Produto: Simulação futura (data manual, sem travar)")
+    st.subheader("Produto: selecione uma data e obtenha a tendência do dia seguinte")
+
+    date_options = df["Data"].dt.date.tolist()
+    selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1)
+
+    idx_list = df.index[df["Data"].dt.date == selected_date]
+    idx = int(idx_list[0])
+
+    X_sel = df.loc[[idx], features].values
+    pred_sel, proba_sel = predict_proba_batch(model, scaler, X_sel, threshold)
+    y = int(pred_sel[0])
+    p = float(proba_sel[0])
+
+    if y == 1:
+        st.success(f"📈 Tendência prevista (dia seguinte): **ALTA** — P(ALTA)={p:.2%}")
+    else:
+        st.warning(f"📉 Tendência prevista (dia seguinte): **BAIXA** — P(ALTA)={p:.2%}")
+
+    st.write("Linha do dia selecionado (já com `Último` corrigido):")
+    st.dataframe(df.loc[[idx], ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct", "Alvo"]], use_container_width=True)
+
+    df_plot = df.tail(int(view_n)).copy()
+    X_plot = df_plot[features].values
+    pred_plot, proba_plot = predict_proba_batch(model, scaler, X_plot, threshold)
+
+    fig = make_signal_chart(df_plot, pred_plot, proba_plot, threshold, "Histórico + Sinais do modelo (com correção de escala)")
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab_futuro:
+    st.subheader("Simulação futura (cenário) até uma data escolhida")
     st.write(
-        "Como não existe preço real futuro no dataset, a previsão depende de uma **simulação de preços** "
-        "até a data escolhida."
+        "Como não existe preço real futuro no dataset, aqui é uma **simulação de cenário**: "
+        "você define um retorno diário e o modelo classifica ALTA/BAIXA para cada dia simulado."
     )
 
     last_date = pd.to_datetime(df["Data"].iloc[-1])
@@ -487,7 +425,7 @@ with tab_produto:
     full = pd.concat([base, fut], ignore_index=True).sort_values("Data").reset_index(drop=True)
     full = correcao_escala_por_vizinhanca(full)
 
-    # Recalcular features no full (mesma lógica)
+    # Recalcular features no full
     full["var_pct"] = full["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         full[f"mm_{dias}"] = full["Último"].rolling(dias, min_periods=dias).mean()
@@ -534,45 +472,11 @@ with tab_produto:
     full["z_rsi_20"] = zscore_roll(full["rsi"], 20)
     full["z_macd_20"] = zscore_roll(full["macd"], 20)
 
-    # ===== versão à prova de qualquer cenário =====
-    future_block_all = full[full["Data"].isin(future_dates)].copy()
-    future_block_all[features] = future_block_all[features].replace([np.inf, -np.inf], np.nan)
+    future_block = full[full["Data"].isin(future_dates)].copy()
+    future_block = future_block.dropna(subset=features)
 
-    mask_valid = future_block_all[features].notna().all(axis=1)
-    n_total = int(len(future_block_all))
-    n_valid = int(mask_valid.sum())
-    n_drop = n_total - n_valid
-
-    st.caption(f"📌 Dias simulados: {n_total} | ✅ válidos: {n_valid} | 🧹 descartados: {n_drop}")
-
-    if n_drop > 0:
-        nan_counts = future_block_all.loc[~mask_valid, features].isna().sum().sort_values(ascending=False)
-        nan_counts = nan_counts[nan_counts > 0].head(10)
-        if len(nan_counts) > 0:
-            with st.expander("Ver motivos do descarte (features com NaN/Inf)"):
-                st.write(nan_counts)
-
-    future_block = future_block_all.loc[mask_valid].copy()
-
-    if n_valid == 0:
-        st.warning(
-            "Nenhum dia simulado ficou válido para previsão (todas as linhas tinham NaN/Inf nas features). "
-            "Tente uma data mais distante (mais histórico para janelas 20/30) ou ajuste o cenário (mu/sigma)."
-        )
-        append_usage_log({
-            "action": "simulacao_futura",
-            "status": "no_valid_days",
-            "threshold": float(threshold),
-            "alvo_user": str(alvo),
-            "horizon_days": int(horizon),
-            "mode": str(mode),
-            "mu": float(mu),
-            "sigma": float(sigma),
-            "seed": int(seed),
-            "n_total": n_total,
-            "n_valid": n_valid,
-            "n_drop": n_drop,
-        })
+    if len(future_block) == 0:
+        st.error("Sem features suficientes. A data precisa estar mais distante (janelas 20/30) ou o cenário gerou NaNs.")
         st.stop()
 
     Xf = future_block[features].values
@@ -581,34 +485,16 @@ with tab_produto:
     future_block["P(ALTA)"] = proba_f
     future_block["Sinal"] = np.where(pred_f == 1, "ALTA", "BAIXA")
 
+    # pega a previsão exatamente na data alvo (se existir), senão a última válida antes dela
     alvo_ts = pd.to_datetime(alvo)
     if (future_block["Data"] == alvo_ts).any():
         row = future_block.loc[future_block["Data"] == alvo_ts].iloc[0]
     else:
-        candidatos = future_block[future_block["Data"] <= alvo_ts]
-        row = candidatos.iloc[-1] if len(candidatos) else future_block.iloc[-1]
+        row = future_block.iloc[-1]
 
+    sinal_alvo = 1 if float(row["P(ALTA)"]) >= threshold else 0
     proba_alvo = float(row["P(ALTA)"])
     data_real_alvo = pd.to_datetime(row["Data"]).date()
-    sinal_alvo = int(proba_alvo >= threshold)
-
-    append_usage_log({
-        "action": "simulacao_futura",
-        "status": "ok",
-        "threshold": float(threshold),
-        "alvo_user": str(alvo),
-        "alvo_effective": str(data_real_alvo),
-        "horizon_days": int(horizon),
-        "mode": str(mode),
-        "mu": float(mu),
-        "sigma": float(sigma),
-        "seed": int(seed),
-        "n_total": n_total,
-        "n_valid": n_valid,
-        "n_drop": n_drop,
-        "proba_alvo": float(proba_alvo),
-        "pred_alvo": int(sinal_alvo),
-    })
 
     if sinal_alvo == 1:
         st.success(f"📈 Tendência prevista para **{data_real_alvo}**: **ALTA** — P(ALTA)={proba_alvo:.2%}")
@@ -619,61 +505,13 @@ with tab_produto:
 
     fig2 = make_signal_chart(
         df_plot=future_block,
-        pred=(future_block["P(ALTA)"].values >= threshold).astype(int),
-        proba=future_block["P(ALTA)"].values,
+        pred=pred_f,
+        proba=proba_f,
         threshold=threshold,
         title=f"Simulação futura — sinais do modelo (até {alvo})",
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-# =========================
-# TAB 2 — HISTÓRICO
-# =========================
-with tab_historico:
-    st.subheader("Histórico: selecione uma data do dataset e obtenha a tendência do dia seguinte")
-
-    date_options = df["Data"].dt.date.tolist()
-    selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1)
-
-    idx_list = df.index[df["Data"].dt.date == selected_date]
-    idx = int(idx_list[0])
-
-    X_sel = df.loc[[idx], features].values
-    pred_sel, proba_sel = predict_proba_batch(model, scaler, X_sel, threshold)
-    y = int(pred_sel[0])
-    p = float(proba_sel[0])
-
-    append_usage_log({
-        "action": "historico_predicao",
-        "threshold": float(threshold),
-        "selected_date": str(selected_date),
-        "proba": float(p),
-        "pred": int(y),
-    })
-
-    if y == 1:
-        st.success(f"📈 Tendência prevista (dia seguinte): **ALTA** — P(ALTA)={p:.2%}")
-    else:
-        st.warning(f"📉 Tendência prevista (dia seguinte): **BAIXA** — P(ALTA)={p:.2%}")
-
-    st.write("Linha do dia selecionado (já com `Último` corrigido):")
-    cols_show = ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct", "Alvo"]
-    cols_show = [c for c in cols_show if c in df.columns]
-    st.dataframe(df.loc[[idx], cols_show], use_container_width=True)
-
-    df_plot = df.tail(int(view_n)).copy()
-    X_plot = df_plot[features].values
-    pred_plot, proba_plot = predict_proba_batch(model, scaler, X_plot, threshold)
-
-    fig = make_signal_chart(
-        df_plot, pred_plot, proba_plot, threshold,
-        "Histórico + Sinais do modelo (sem vermelho)"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# =========================
-# TAB 3 — DIAGNÓSTICO
-# =========================
 with tab_diag:
     st.subheader("Painel explícito de métricas (fixas do Colab — sem re-treino)")
 
@@ -722,12 +560,3 @@ with tab_diag:
 
     st.write("Últimos 10 pontos (Data, Último):")
     st.dataframe(df[["Data", "Último"]].tail(10), use_container_width=True)
-
-    append_usage_log({
-        "action": "abrir_diagnostico",
-        "threshold": float(threshold),
-        "rows_features": int(len(df)),
-        "date_min": str(df["Data"].iloc[0].date()),
-        "date_max": str(df["Data"].iloc[-1].date()),
-    })
-```
