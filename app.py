@@ -544,7 +544,7 @@ df, features = load_df_and_features(DEFAULT_CSV)
 
 # ✅ sem alterar as abas atuais, apenas adicionando uma nova aba no final
 tab_produto, tab_historico, tab_diag, tab_entrada = st.tabs(
-    ["🧠 Produto (Simulação futura)", "📅 Histórico", "🔎 Diagnóstico", "📤 Testar com Meus Dados"]
+    ["🧠 Sandbox de Simulação", "📅 Histórico", "🔎 Diagnóstico", "📤 Testar com Meus Dados"]
 )
 
 # =========================
