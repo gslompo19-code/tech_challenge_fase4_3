@@ -424,7 +424,7 @@ tab_produto, tab_historico, tab_diag = st.tabs(
 # TAB 1 — PRODUTO (SIMULAÇÃO FUTURA)
 # =========================
 with tab_produto:
-    st.subheader("Produto: Simulação futura (data manual, sem travar)")
+    st.subheader("Simulação futura")
 
     st.write(
         "Como não existe preço real futuro no dataset, a previsão depende de uma **simulação de preços** "
