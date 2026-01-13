@@ -506,7 +506,7 @@ tab_produto, tab_historico, tab_diag = st.tabs(
 # TAB 1 — PRODUTO (SIMULAÇÃO FUTURA)
 # =========================
 with tab_produto:
-    st.subheader("Produto: Simulação futura (data manual, sem travar)")
+    st.subheader("Simulação Futura")
 
     st.info(
         "Aqui você escolhe uma **data futura** e um **cenário**. Como não existe preço real do futuro no CSV, "
