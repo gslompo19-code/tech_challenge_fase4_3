@@ -140,9 +140,7 @@ def zscore_roll(s: pd.Series, w: int = 20, eps: float = 1e-6) -> pd.Series:
     m = s.rolling(w, min_periods=w).mean()
     sd = s.rolling(w, min_periods=w).std()
 
-    # evita divisão por zero/valores ínfimos
     sd = sd.mask(sd < eps, eps)
-
     return (s - m) / sd
 
 
@@ -289,7 +287,6 @@ def predict_proba_batch(model, scaler, X, threshold):
     if X.shape[0] == 0:
         return np.array([], dtype=int), np.array([], dtype=float)
 
-    # proteção final
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     Xs = scaler.transform(X)
@@ -387,19 +384,21 @@ def make_signal_chart_intuitivo(
         )
     )
 
-    # ✅ AJUSTE: legenda embaixo (evita cobrir o rangeselector)
+    # ✅ AJUSTE: legenda embaixo (e não some)
     fig.update_layout(
         template="plotly_white",
         title=title,
         height=int(height),
-        margin=dict(l=10, r=10, t=70, b=90),  # b maior pra caber a legenda embaixo
+        margin=dict(l=10, r=10, t=70, b=150),  # espaço pra legenda abaixo
         hovermode="x unified",
         legend=dict(
             orientation="h",
-            yanchor="top",
-            y=-0.22,   # joga a legenda para baixo do gráfico
-            xanchor="left",
             x=0,
+            xanchor="left",
+            y=-0.28,
+            yanchor="top",
+            yref="paper",   # garante referência correta
+            itemwidth=90,
         ),
         xaxis=dict(
             type="date",
@@ -424,9 +423,7 @@ def make_signal_chart_intuitivo(
         ),
     )
 
-    # ✅ força o eixo X a acompanhar o dataframe (evita “segurar” janela antiga)
     fig.update_xaxes(range=[dates.min(), dates.max()])
-
     return fig
 
 
