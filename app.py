@@ -14,7 +14,7 @@ import joblib
 # =========================
 # Config
 # =========================
-st.set_page_config(page_title="Movimento bolsa de valores — Sistema Preditivo", layout="wide")
+st.set_page_config(page_title="IBOV Signal — Sistema Preditivo", layout="wide")
 
 DEFAULT_CSV = "Dados Ibovespa (2).csv"
 MODEL_PATH = "modelo_catboost.pkl"
@@ -138,9 +138,15 @@ def obv_series(data):
     return obv
 
 
-def zscore_roll(s: pd.Series, w: int = 20) -> pd.Series:
+def zscore_roll(s: pd.Series, w: int = 20, eps: float = 1e-9) -> pd.Series:
+    """
+    Z-score rolling mais robusto:
+    - mantém NaN enquanto não houver janela completa
+    - evita inf quando std ~ 0 (deixa NaN nesse caso)
+    """
     m = s.rolling(w, min_periods=w).mean()
     sd = s.rolling(w, min_periods=w).std()
+    sd = sd.where(sd > eps, np.nan)
     return (s - m) / sd
 
 
@@ -279,11 +285,9 @@ def predict_proba_batch(model, scaler, X, threshold):
     if X.ndim == 1:
         X = X.reshape(1, -1)
 
-    # vazio => retorna vazio
     if X.shape[0] == 0:
         return np.array([], dtype=int), np.array([], dtype=float)
 
-    # aqui só protege contra chamada sem limpeza
     if not np.isfinite(X).all():
         raise ValueError("Ainda há NaN/Inf em X. Limpe antes de chamar predict_proba_batch().")
 
@@ -297,64 +301,146 @@ def predict_proba_batch(model, scaler, X, threshold):
 
 
 # =========================
-# Gráficos (sem vermelho / sem sombra vermelha)
+# Gráficos (mais profissionais e intuitivos)
+# - Hover unificado (cursor vertical)
+# - Rangeselector (1m/3m/6m/YTD/All)
+# - Rangeslider sem duplicar (evita sobreposição)
+# - Tooltips ricos (Preço, P(ALTA), Sinal)
 # =========================
-def make_signal_chart(df_plot, pred, proba, threshold, title):
+def make_signal_chart(
+    df_plot: pd.DataFrame,
+    pred,
+    proba,
+    threshold: float,
+    title: str,
+    show_baixa: bool = False,
+    show_fill: bool = True,
+    height: int = 560,
+    show_rangeslider: bool = True,
+):
+    df_plot = df_plot.copy()
+    df_plot["Data"] = pd.to_datetime(df_plot["Data"])
     price_vals = df_plot["Último"].astype(float).values
-    dates = df_plot["Data"]
+    dates = df_plot["Data"].values
+
+    pred = np.asarray(pred, dtype=int)
+    proba = np.asarray(proba, dtype=float)
+
+    # Segurança: alinhar tamanhos
+    n = min(len(df_plot), len(pred), len(proba))
+    df_plot = df_plot.iloc[:n].copy()
+    price_vals = price_vals[:n]
+    dates = dates[:n]
+    pred = pred[:n]
+    proba = proba[:n]
 
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.10,
         row_heights=[0.68, 0.32],
-        subplot_titles=("Preço (corrigido) + Sinal", "Probabilidade P(ALTA)")
+        subplot_titles=("Preço (Último) + Sinais", "Probabilidade do modelo — P(ALTA)")
     )
 
+    # --- Preço ---
     fig.add_trace(
-        go.Scatter(
-            x=dates, y=price_vals, mode="lines", name="Preço (Último)",
-            line=dict(width=2)
-        ),
-        row=1, col=1
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=dates, y=np.where(pred == 1, price_vals, np.nan),
-            mode="markers", name="ALTA",
-            marker=dict(size=9, symbol="triangle-up")
-        ),
-        row=1, col=1
-    )
-
-    # removemos visual de baixa no subplot superior para não poluir
-    # (se quiser de volta, é só re-adicionar trace com triangle-down)
-    # fig.add_trace(...)
-
-    fig.add_trace(
-        go.Scatter(
-            x=dates, y=proba, mode="lines", name="P(ALTA)",
+        go.Scattergl(
+            x=dates, y=price_vals,
+            mode="lines",
+            name="Preço (Último)",
             line=dict(width=2),
-            fill="tozeroy",
-            fillcolor="rgba(0, 123, 255, 0.25)",  # azul neutro
+            hovertemplate="<b>%{x|%d/%m/%Y}</b><br>Preço: %{y:,.2f}<extra></extra>",
+        ),
+        row=1, col=1
+    )
+
+    # --- Marcadores ALTA ---
+    fig.add_trace(
+        go.Scattergl(
+            x=dates,
+            y=np.where(pred == 1, price_vals, np.nan),
+            mode="markers",
+            name="Sinal: ALTA",
+            marker=dict(size=9, symbol="triangle-up"),
+            hovertemplate="<b>%{x|%d/%m/%Y}</b><br><b>Sinal:</b> ALTA<br>Preço: %{y:,.2f}<extra></extra>",
+        ),
+        row=1, col=1
+    )
+
+    # --- Marcadores BAIXA (opcional) ---
+    if show_baixa:
+        fig.add_trace(
+            go.Scattergl(
+                x=dates,
+                y=np.where(pred == 0, price_vals, np.nan),
+                mode="markers",
+                name="Sinal: BAIXA",
+                marker=dict(size=8, symbol="triangle-down"),
+                hovertemplate="<b>%{x|%d/%m/%Y}</b><br><b>Sinal:</b> BAIXA<br>Preço: %{y:,.2f}<extra></extra>",
+            ),
+            row=1, col=1
+        )
+
+    # --- Probabilidade ---
+    fill = "tozeroy" if show_fill else None
+    fillcolor = "rgba(0, 123, 255, 0.18)" if show_fill else None
+
+    fig.add_trace(
+        go.Scattergl(
+            x=dates, y=proba,
+            mode="lines",
+            name="P(ALTA)",
+            line=dict(width=2),
+            fill=fill,
+            fillcolor=fillcolor,
+            hovertemplate="<b>%{x|%d/%m/%Y}</b><br>P(ALTA): %{y:.3f}<extra></extra>",
         ),
         row=2, col=1
     )
 
+    # Threshold
     fig.add_hline(
-        y=threshold, line_dash="dash", line_width=2,
+        y=float(threshold),
+        line_dash="dash",
+        line_width=2,
         annotation_text=f"threshold={threshold:.2f}",
         row=2, col=1
     )
 
+    # Estética mais profissional
     fig.update_layout(
-        height=620,
-        margin=dict(l=10, r=10, t=60, b=10),
-        legend=dict(orientation="h"),
+        template="plotly_white",
         title=title,
+        height=int(height),
+        margin=dict(l=10, r=10, t=70, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        hovermode="x unified",
     )
-    fig.update_yaxes(title_text="Preço", row=1, col=1)
-    fig.update_yaxes(title_text="P(ALTA)", range=[0, 1], row=2, col=1)
-    fig.update_xaxes(rangeslider_visible=True)
+
+    fig.update_yaxes(title_text="Preço", row=1, col=1, showgrid=True)
+    fig.update_yaxes(title_text="P(ALTA)", row=2, col=1, range=[0, 1], showgrid=True)
+
+    # Rangeselector + rangeslider (SEM DUPLICAR)
+    fig.update_xaxes(
+        rangeselector=dict(
+            buttons=list([
+                dict(count=1, label="1m", step="month", stepmode="backward"),
+                dict(count=3, label="3m", step="month", stepmode="backward"),
+                dict(count=6, label="6m", step="month", stepmode="backward"),
+                dict(step="year", stepmode="todate", label="YTD"),
+                dict(step="all", label="All"),
+            ])
+        ),
+        row=2, col=1
+    )
+
+    # Desliga em todos e liga só no 1º eixo (xaxis)
+    fig.update_xaxes(rangeslider_visible=False)
+    fig.update_layout(
+        xaxis=dict(rangeslider=dict(visible=bool(show_rangeslider))),
+        xaxis2=dict(rangeslider=dict(visible=False)),
+    )
+
     return fig
 
 
@@ -368,9 +454,11 @@ def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
             z=cm, x=x, y=y,
             text=cm, texttemplate="%{text}",
             hovertemplate="",
+            colorscale="Blues",
         )
     )
     fig.update_layout(
+        template="plotly_white",
         title="Matriz de Confusão (valores do Colab)",
         height=420,
         margin=dict(l=10, r=10, t=50, b=10)
@@ -381,12 +469,19 @@ def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
 # =========================
 # App
 # =========================
-st.title("📈 Movimento Ibovespa — Sistema Preditivo")
+st.title("📈 IBOV Signal — Sistema Preditivo (modelo do Colab, sem re-treino)")
 
 with st.sidebar:
-    st.header("Config")
+    st.header("Config do Modelo")
     threshold = st.slider("Threshold para ALTA", 0.30, 0.70, 0.50, 0.01)
-    view_n = st.slider("Janela do gráfico (últimos N)", 60, 1500, 400, 20)
+
+    st.divider()
+    st.header("Config do Gráfico")
+    view_n = st.slider("Janela do gráfico (Histórico) — últimos N", 60, 1500, 400, 20)
+    chart_height = st.slider("Altura do gráfico", 420, 850, 560, 10)
+    show_rangeslider = st.checkbox("Mostrar range slider", value=True)
+    show_fill = st.checkbox("Mostrar área preenchida em P(ALTA)", value=True)
+    show_baixa = st.checkbox("Mostrar marcadores de BAIXA", value=False)
     st.caption("Patch de escala do `Último` aplicado (corrige gráfico 'pente').")
 
     st.divider()
@@ -424,8 +519,7 @@ tab_produto, tab_historico, tab_diag = st.tabs(
 # TAB 1 — PRODUTO (SIMULAÇÃO FUTURA)
 # =========================
 with tab_produto:
-    st.subheader("Simulação futura")
-
+    st.subheader("Produto: Simulação futura (data manual, sem travar)")
     st.write(
         "Como não existe preço real futuro no dataset, a previsão depende de uma **simulação de preços** "
         "até a data escolhida."
@@ -547,7 +641,7 @@ with tab_produto:
 
     if n_drop > 0:
         nan_counts = future_block_all.loc[~mask_valid, features].isna().sum().sort_values(ascending=False)
-        nan_counts = nan_counts[nan_counts > 0].head(10)
+        nan_counts = nan_counts[nan_counts > 0].head(12)
         if len(nan_counts) > 0:
             with st.expander("Ver motivos do descarte (features com NaN/Inf)"):
                 st.write(nan_counts)
@@ -625,8 +719,12 @@ with tab_produto:
         proba=future_block["P(ALTA)"].values,
         threshold=threshold,
         title=f"Simulação futura — sinais do modelo (até {alvo})",
+        show_baixa=show_baixa,
+        show_fill=show_fill,
+        height=chart_height,
+        show_rangeslider=show_rangeslider,
     )
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
 
 # =========================
 # TAB 2 — HISTÓRICO (DATA DO DATASET)
@@ -668,10 +766,17 @@ with tab_historico:
     pred_plot, proba_plot = predict_proba_batch(model, scaler, X_plot, threshold)
 
     fig = make_signal_chart(
-        df_plot, pred_plot, proba_plot, threshold,
-        "Histórico + Sinais do modelo (sem vermelho)"
+        df_plot=df_plot,
+        pred=pred_plot,
+        proba=proba_plot,
+        threshold=threshold,
+        title="Histórico + Sinais do modelo",
+        show_baixa=show_baixa,
+        show_fill=show_fill,
+        height=chart_height,
+        show_rangeslider=show_rangeslider,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
 
 # =========================
 # TAB 3 — DIAGNÓSTICO
@@ -704,7 +809,7 @@ with tab_diag:
 
     with colB:
         st.write("Matriz de confusão (gráfico):")
-        st.plotly_chart(plot_confusion_matrix(cm), use_container_width=True)
+        st.plotly_chart(plot_confusion_matrix(cm), use_container_width=True, config={"displaylogo": False})
 
     st.divider()
 
