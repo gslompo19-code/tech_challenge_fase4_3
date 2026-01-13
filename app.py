@@ -14,7 +14,7 @@ import joblib
 # =========================
 # Config
 # =========================
-st.set_page_config(page_title="IBOV Signal — Sistema Preditivo", layout="wide")
+st.set_page_config(page_title="Movimento bolsa de valores — Sistema Preditivo", layout="wide")
 
 DEFAULT_CSV = "Dados Ibovespa (2).csv"
 MODEL_PATH = "modelo_catboost.pkl"
