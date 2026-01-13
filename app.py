@@ -439,7 +439,7 @@ with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
 - Você ajusta o **Threshold** (na lateral). Se **P(ALTA) ≥ Threshold**, o sinal vira **ALTA**; caso contrário, **BAIXA**.
 
 **Abas**
-- **🧠 Produto (Simulação futura):** escolha uma **data futura** e um **cenário de simulação**. O app **simula preços até a data** e calcula o sinal/probabilidade para esse período (**não é dado real futuro**, é simulação).
+- **🧠 Sandbox de Simulação:** escolha uma **data futura** e um **cenário de simulação**. O app **simula preços até a data** e calcula o sinal/probabilidade para esse período (**não é dado real futuro**, é simulação).
 - **📅 Histórico:** selecione uma **data do dataset** e veja a previsão para o **dia seguinte**, com gráfico do histórico.
 - **🔎 Diagnóstico:** painel com **métricas do modelo** (fixas do treino) e informações do dataset.
 
@@ -499,7 +499,7 @@ except Exception as e:
 df, features = load_df_and_features(DEFAULT_CSV)
 
 tab_produto, tab_historico, tab_diag = st.tabs(
-    ["🧠 Produto (Simulação futura)", "📅 Histórico (data do dataset)", "🔎 Diagnóstico (métricas)"]
+    ["🧠 Sandbox de Simulação", "📅 Histórico (data do dataset)", "🔎 Diagnóstico (métricas)"]
 )
 
 # =========================
