@@ -426,7 +426,7 @@ def make_signal_chart_intuitivo(
 # =========================
 # App
 # =========================
-st.title("📈 IBOV Signal — Sistema Preditivo (modelo do Colab, sem re-treino)")
+st.title("📈 IBOV TrendLab")
 
 # ✅ EXPLICAÇÃO SUTIL E OBJETIVA (PÁGINA)
 with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
