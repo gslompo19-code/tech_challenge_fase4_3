@@ -430,6 +430,7 @@ def make_signal_chart_intuitivo(
         )
     )
 
+    # ✅ legenda embaixo e visível
     fig.update_layout(
         template="plotly_white",
         title=title,
@@ -706,6 +707,7 @@ with tab_produto:
 
 # =========================
 # TAB 2 — TESTAR COM MEUS DADOS
+# ✅ IMPORTANTE: NÃO USAR st.stop() AQUI, para não impedir as abas seguintes
 # =========================
 with tab_entrada:
     st.subheader("Testar com Meus Dados: Upload de CSV ou Entrada Manual")
@@ -717,8 +719,13 @@ with tab_entrada:
         icon="ℹ️",
     )
 
-    modo = st.radio("Modo de entrada", ["📤 Upload de CSV (histórico)", "✍️ Entrada manual (um dia)"], horizontal=True)
+    modo = st.radio(
+        "Modo de entrada",
+        ["📤 Upload de CSV (histórico)", "✍️ Entrada manual (um dia)"],
+        horizontal=True
+    )
 
+    # ---------- UPLOAD CSV ----------
     if modo.startswith("📤"):
         st.markdown("### 1) Upload de CSV (histórico)")
         st.caption("O CSV deve conter as colunas: **Data, Último, Abertura, Máxima, Mínima, Vol.**")
@@ -727,80 +734,83 @@ with tab_entrada:
 
         if up is None:
             st.warning("Envie um CSV para carregar seus dados.")
-            st.stop()
-
-        try:
-            df_u = carregar_dados_upload(up)
-            features_u = df_u.attrs["features_sugeridas"]
-        except Exception as e:
-            st.error(f"Não consegui processar o CSV enviado: {e}")
-            st.stop()
-
-        append_usage_log({
-            "action": "upload_csv",
-            "status": "ok",
-            "filename": getattr(up, "name", "uploaded.csv"),
-            "rows_valid": int(len(df_u)),
-        })
-
-        st.success(f"CSV carregado: **{getattr(up, 'name', 'uploaded.csv')}** | Linhas válidas: **{len(df_u)}**")
-        st.caption(f"Período: {df_u['Data'].iloc[0].date()} → {df_u['Data'].iloc[-1].date()}")
-
-        date_options_u = df_u["Data"].dt.date.tolist()
-        selected_date_u = st.selectbox(
-            "Selecione uma data do seu CSV (previsão para o dia seguinte)",
-            options=date_options_u,
-            index=len(date_options_u) - 1,
-            key="upload_hist_date",
-        )
-
-        idx_list_u = df_u.index[df_u["Data"].dt.date == selected_date_u]
-        idx_u = int(idx_list_u[0])
-
-        X_sel_u = df_u.loc[[idx_u], features_u].values
-        pred_sel_u, proba_sel_u = predict_proba_batch(model, scaler, X_sel_u, threshold)
-        y_u = int(pred_sel_u[0])
-        p_u = float(proba_sel_u[0])
-
-        append_usage_log({
-            "action": "upload_predicao_data",
-            "threshold": float(threshold),
-            "selected_date": str(selected_date_u),
-            "proba": float(p_u),
-            "pred": int(y_u),
-        })
-
-        if y_u == 1:
-            st.success(f"📈 Tendência prevista (dia seguinte): **ALTA** — P(ALTA)={p_u:.2%}")
         else:
-            st.warning(f"📉 Tendência prevista (dia seguinte): **BAIXA** — P(ALTA)={p_u:.2%}")
+            df_u = None
+            try:
+                df_u = carregar_dados_upload(up)
+                features_u = df_u.attrs["features_sugeridas"]
+            except Exception as e:
+                st.error(f"Não consegui processar o CSV enviado: {e}")
 
-        cols_show_u = ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct", "Alvo"]
-        cols_show_u = [c for c in cols_show_u if c in df_u.columns]
-        st.dataframe(df_u.loc[[idx_u], cols_show_u], use_container_width=True)
+            if df_u is not None and len(df_u) > 0:
+                append_usage_log({
+                    "action": "upload_csv",
+                    "status": "ok",
+                    "filename": getattr(up, "name", "uploaded.csv"),
+                    "rows_valid": int(len(df_u)),
+                })
 
-        df_plot_u = df_u.tail(int(view_n)).copy()
-        X_plot_u = df_plot_u[features_u].values
-        pred_plot_u, proba_plot_u = predict_proba_batch(model, scaler, X_plot_u, threshold)
+                st.success(f"CSV carregado: **{getattr(up, 'name', 'uploaded.csv')}** | Linhas válidas: **{len(df_u)}**")
+                st.caption(f"Período: {df_u['Data'].iloc[0].date()} → {df_u['Data'].iloc[-1].date()}")
 
-        fig_u = make_signal_chart_intuitivo(
-            df_plot=df_plot_u,
-            pred=pred_plot_u,
-            proba=proba_plot_u,
-            threshold=threshold,
-            title="Upload CSV — preço + probabilidade",
-            height=chart_height,
-            show_rangeslider=show_rangeslider,
-        )
+                # Previsão por data (igual ao Histórico, mas usando o CSV do usuário)
+                date_options_u = df_u["Data"].dt.date.tolist()
+                selected_date_u = st.selectbox(
+                    "Selecione uma data do seu CSV (previsão para o dia seguinte)",
+                    options=date_options_u,
+                    index=len(date_options_u) - 1,
+                    key="upload_hist_date",
+                )
 
-        upload_key = f"upload_{getattr(up,'name','csv')}_{selected_date_u}_{threshold}_{view_n}_{chart_height}_{show_rangeslider}"
-        st.plotly_chart(
-            fig_u,
-            use_container_width=True,
-            config={"displaylogo": False, "scrollZoom": True},
-            key=upload_key,
-        )
+                idx_list_u = df_u.index[df_u["Data"].dt.date == selected_date_u]
+                idx_u = int(idx_list_u[0])
 
+                X_sel_u = df_u.loc[[idx_u], features_u].values
+                pred_sel_u, proba_sel_u = predict_proba_batch(model, scaler, X_sel_u, threshold)
+                y_u = int(pred_sel_u[0])
+                p_u = float(proba_sel_u[0])
+
+                append_usage_log({
+                    "action": "upload_predicao_data",
+                    "threshold": float(threshold),
+                    "selected_date": str(selected_date_u),
+                    "proba": float(p_u),
+                    "pred": int(y_u),
+                })
+
+                if y_u == 1:
+                    st.success(f"📈 Tendência prevista (dia seguinte): **ALTA** — P(ALTA)={p_u:.2%}")
+                else:
+                    st.warning(f"📉 Tendência prevista (dia seguinte): **BAIXA** — P(ALTA)={p_u:.2%}")
+
+                cols_show_u = ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct", "Alvo"]
+                cols_show_u = [c for c in cols_show_u if c in df_u.columns]
+                st.dataframe(df_u.loc[[idx_u], cols_show_u], use_container_width=True)
+
+                # Gráfico do CSV do usuário (últimos N)
+                df_plot_u = df_u.tail(int(view_n)).copy()
+                X_plot_u = df_plot_u[features_u].values
+                pred_plot_u, proba_plot_u = predict_proba_batch(model, scaler, X_plot_u, threshold)
+
+                fig_u = make_signal_chart_intuitivo(
+                    df_plot=df_plot_u,
+                    pred=pred_plot_u,
+                    proba=proba_plot_u,
+                    threshold=threshold,
+                    title="Upload CSV — preço + probabilidade",
+                    height=chart_height,
+                    show_rangeslider=show_rangeslider,
+                )
+
+                upload_key = f"upload_{getattr(up,'name','csv')}_{selected_date_u}_{threshold}_{view_n}_{chart_height}_{show_rangeslider}"
+                st.plotly_chart(
+                    fig_u,
+                    use_container_width=True,
+                    config={"displaylogo": False, "scrollZoom": True},
+                    key=upload_key,
+                )
+
+    # ---------- ENTRADA MANUAL ----------
     else:
         st.markdown("### 2) Entrada manual (um dia OHLCV)")
         st.caption(
@@ -829,89 +839,94 @@ with tab_entrada:
                 maxima = st.number_input("Máxima", value=float(last_price) * 1.01, step=1.0, key="m_maxima")
                 minima = st.number_input("Mínima", value=float(last_price) * 0.99, step=1.0, key="m_minima")
             with c3:
-                vol = st.number_input("Vol. (numérico)", value=float(last_vol) if last_vol > 0 else 1_000_000.0, step=1000.0, key="m_vol")
+                vol = st.number_input(
+                    "Vol. (numérico)",
+                    value=float(last_vol) if last_vol > 0 else 1_000_000.0,
+                    step=1000.0,
+                    key="m_vol"
+                )
 
             submitted = st.form_submit_button("Calcular previsão para o dia seguinte")
 
         if not submitted:
-            st.stop()
+            st.info("Preencha os campos e clique em **Calcular previsão para o dia seguinte**.")
+        else:
+            if data_manual <= last_date.date():
+                st.error("A data manual precisa ser **maior** que a última data do histórico.")
+            else:
+                # Monta uma linha manual e anexa ao histórico do app
+                manual_row = pd.DataFrame([{
+                    "Data": pd.to_datetime(data_manual),
+                    "Vol.": float(vol),
+                    "Último": float(ultimo),
+                    "Abertura": float(abertura),
+                    "Máxima": float(maxima),
+                    "Mínima": float(minima),
+                }])
 
-        if data_manual <= last_date.date():
-            st.error("A data manual precisa ser **maior** que a última data do histórico.")
-            st.stop()
+                base = df[["Data", "Vol.", "Último", "Abertura", "Máxima", "Mínima"]].copy()
+                full_m = pd.concat([base, manual_row], ignore_index=True).sort_values("Data").reset_index(drop=True)
+                full_m = correcao_escala_por_vizinhanca(full_m)
+                full_m = compute_features_inplace(full_m)
+                full_m = full_m.replace([np.inf, -np.inf], np.nan)
 
-        manual_row = pd.DataFrame([{
-            "Data": pd.to_datetime(data_manual),
-            "Vol.": float(vol),
-            "Último": float(ultimo),
-            "Abertura": float(abertura),
-            "Máxima": float(maxima),
-            "Mínima": float(minima),
-        }])
+                row_m = full_m.iloc[-1:].copy()
+                row_m[features] = row_m[features].replace([np.inf, -np.inf], np.nan)
+                row_m[features] = row_m[features].ffill().bfill().fillna(0.0)
 
-        base = df[["Data", "Vol.", "Último", "Abertura", "Máxima", "Mínima"]].copy()
-        full_m = pd.concat([base, manual_row], ignore_index=True).sort_values("Data").reset_index(drop=True)
-        full_m = correcao_escala_por_vizinhanca(full_m)
-        full_m = compute_features_inplace(full_m)
-        full_m = full_m.replace([np.inf, -np.inf], np.nan)
+                Xm = row_m[features].values
+                pred_m, proba_m = predict_proba_batch(model, scaler, Xm, threshold)
 
-        row_m = full_m.iloc[-1:].copy()
-        row_m[features] = row_m[features].replace([np.inf, -np.inf], np.nan)
-        row_m[features] = row_m[features].ffill().bfill().fillna(0.0)
+                y_m = int(pred_m[0])
+                p_m = float(proba_m[0])
 
-        Xm = row_m[features].values
-        pred_m, proba_m = predict_proba_batch(model, scaler, Xm, threshold)
+                append_usage_log({
+                    "action": "manual_ohlcv",
+                    "status": "ok",
+                    "threshold": float(threshold),
+                    "data_manual": str(data_manual),
+                    "ultimo": float(ultimo),
+                    "abertura": float(abertura),
+                    "maxima": float(maxima),
+                    "minima": float(minima),
+                    "vol": float(vol),
+                    "proba": float(p_m),
+                    "pred": int(y_m),
+                })
 
-        y_m = int(pred_m[0])
-        p_m = float(proba_m[0])
+                cA, cB, cC = st.columns(3)
+                cA.metric("Data manual", str(data_manual))
+                cB.metric("P(ALTA) (dia seguinte)", f"{p_m:.2%}")
+                cC.metric("Sinal", "ALTA" if y_m == 1 else "BAIXA")
 
-        append_usage_log({
-            "action": "manual_ohlcv",
-            "status": "ok",
-            "threshold": float(threshold),
-            "data_manual": str(data_manual),
-            "ultimo": float(ultimo),
-            "abertura": float(abertura),
-            "maxima": float(maxima),
-            "minima": float(minima),
-            "vol": float(vol),
-            "proba": float(p_m),
-            "pred": int(y_m),
-        })
+                cols_show_m = ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct"]
+                cols_show_m = [c for c in cols_show_m if c in full_m.columns]
+                st.dataframe(full_m.tail(1)[cols_show_m], use_container_width=True)
 
-        cA, cB, cC = st.columns(3)
-        cA.metric("Data manual", str(data_manual))
-        cB.metric("P(ALTA) (dia seguinte)", f"{p_m:.2%}")
-        cC.metric("Sinal", "ALTA" if y_m == 1 else "BAIXA")
+                df_plot_m = full_m.tail(int(view_n)).copy()
+                df_plot_m[features] = df_plot_m[features].replace([np.inf, -np.inf], np.nan)
+                df_plot_m[features] = df_plot_m[features].ffill().bfill().fillna(0.0)
 
-        cols_show_m = ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct"]
-        cols_show_m = [c for c in cols_show_m if c in full_m.columns]
-        st.dataframe(full_m.tail(1)[cols_show_m], use_container_width=True)
+                X_plot_m = df_plot_m[features].values
+                pred_plot_m, proba_plot_m = predict_proba_batch(model, scaler, X_plot_m, threshold)
 
-        df_plot_m = full_m.tail(int(view_n)).copy()
-        df_plot_m[features] = df_plot_m[features].replace([np.inf, -np.inf], np.nan)
-        df_plot_m[features] = df_plot_m[features].ffill().bfill().fillna(0.0)
+                fig_m = make_signal_chart_intuitivo(
+                    df_plot=df_plot_m.assign(**{"P(ALTA)": proba_plot_m}),
+                    pred=pred_plot_m,
+                    proba=proba_plot_m,
+                    threshold=threshold,
+                    title="Entrada manual — histórico + ponto inserido (preço + probabilidade)",
+                    height=chart_height,
+                    show_rangeslider=show_rangeslider,
+                )
 
-        X_plot_m = df_plot_m[features].values
-        pred_plot_m, proba_plot_m = predict_proba_batch(model, scaler, X_plot_m, threshold)
-
-        fig_m = make_signal_chart_intuitivo(
-            df_plot=df_plot_m.assign(**{"P(ALTA)": proba_plot_m}),
-            pred=pred_plot_m,
-            proba=proba_plot_m,
-            threshold=threshold,
-            title="Entrada manual — histórico + ponto inserido (preço + probabilidade)",
-            height=chart_height,
-            show_rangeslider=show_rangeslider,
-        )
-
-        manual_key = f"manual_{data_manual}_{threshold}_{view_n}_{chart_height}_{show_rangeslider}"
-        st.plotly_chart(
-            fig_m,
-            use_container_width=True,
-            config={"displaylogo": False, "scrollZoom": True},
-            key=manual_key,
-        )
+                manual_key = f"manual_{data_manual}_{threshold}_{view_n}_{chart_height}_{show_rangeslider}"
+                st.plotly_chart(
+                    fig_m,
+                    use_container_width=True,
+                    config={"displaylogo": False, "scrollZoom": True},
+                    key=manual_key,
+                )
 
 # =========================
 # TAB 3 — HISTÓRICO
