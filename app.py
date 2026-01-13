@@ -934,7 +934,7 @@ with tab_entrada:
 with tab_historico:
     st.subheader("Histórico: selecione uma data do dataset e obtenha a tendência do dia seguinte")
     st.info(
-        "Aqui você trabalha com **dados reais do CSV**. Selecione uma data e veja a previsão do **dia seguinte** "
+        "Aqui você trabalha com **dados reais** do CSV utilizado no modelo CatBoost treinado na Fase 2 do Tech Challenge da Fiap. Selecione uma data e veja a previsão do **dia seguinte** "
         f"como **P(ALTA)** e **Sinal** (usando o **Threshold** da lateral).",
         icon="ℹ️",
     )
