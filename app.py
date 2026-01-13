@@ -428,6 +428,26 @@ def make_signal_chart_intuitivo(
 # =========================
 st.title("📈 IBOV Signal — Sistema Preditivo (modelo do Colab, sem re-treino)")
 
+# ✅ EXPLICAÇÃO SUTIL E OBJETIVA (PÁGINA)
+with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
+    st.markdown(
+        """
+- Este app usa um **modelo já treinado** para estimar a **probabilidade do IBOV subir no próximo dia** (**P(ALTA)**).
+- Você ajusta o **Threshold** (na lateral). Se **P(ALTA) ≥ Threshold**, o sinal vira **ALTA**; caso contrário, **BAIXA**.
+
+**Abas**
+- **🧠 Produto (Simulação futura):** escolha uma **data futura** e um **cenário de simulação**. O app **simula preços até a data** e calcula o sinal/probabilidade para esse período (**não é dado real futuro**, é simulação).
+- **📅 Histórico:** selecione uma **data do dataset** e veja a previsão para o **dia seguinte**, com gráfico do histórico.
+- **🔎 Diagnóstico:** painel com **métricas do modelo** (fixas do treino) e informações do dataset.
+
+**Gráfico**
+- Linha = **Preço**
+- Triângulos = **Sinal (ALTA/BAIXA)**
+- Linha no eixo direito = **P(ALTA)**
+- Você pode **dar zoom**, arrastar e usar o **range slider** para navegar no tempo.
+        """.strip()
+    )
+
 with st.sidebar:
     st.header("Config do Modelo")
     threshold = st.slider("Threshold para ALTA", 0.30, 0.70, 0.50, 0.01)
@@ -437,6 +457,19 @@ with st.sidebar:
     view_n = st.slider("Janela do histórico — últimos N", 60, 1500, 400, 20)
     chart_height = st.slider("Altura do gráfico", 420, 900, 560, 10)
     show_rangeslider = st.checkbox("Mostrar range slider", value=True)
+
+    st.divider()
+
+    # ✅ EXPLICAÇÃO NO LUGAR NATURAL (SIDEBAR)
+    with st.expander("📌 Entenda P(ALTA) e Threshold", expanded=False):
+        st.markdown(
+            """
+- **P(ALTA)**: probabilidade estimada de o índice fechar **mais alto** no **próximo dia**.
+- **Threshold**: “linha de corte” para o sinal:
+  - **P(ALTA) ≥ Threshold** → **ALTA**
+  - **P(ALTA) < Threshold** → **BAIXA**
+            """.strip()
+        )
 
     st.divider()
     st.subheader("Log de uso")
@@ -473,9 +506,13 @@ tab_produto, tab_historico, tab_diag = st.tabs(
 # =========================
 with tab_produto:
     st.subheader("Produto: Simulação futura (data manual, sem travar)")
-    st.write(
-        "Como não existe preço real futuro no dataset, a previsão depende de uma **simulação de preços** "
-        "até a data escolhida."
+
+    # ✅ TEXTO CURTO NO LUGAR CERTO
+    st.info(
+        "Aqui você escolhe uma **data futura** e um **cenário**. Como não existe preço real do futuro no CSV, "
+        "o app **simula uma trajetória de preços** até a data escolhida e calcula **P(ALTA)** e **Sinal** "
+        f"(com base no **Threshold** definido na lateral).",
+        icon="ℹ️",
     )
 
     last_date = pd.to_datetime(df["Data"].iloc[-1])
@@ -640,6 +677,13 @@ with tab_produto:
 with tab_historico:
     st.subheader("Histórico: selecione uma data do dataset e obtenha a tendência do dia seguinte")
 
+    # ✅ TEXTO CURTO NO LUGAR CERTO
+    st.info(
+        "Aqui você trabalha com **dados reais do CSV**. Selecione uma data e veja a previsão do **dia seguinte** "
+        f"como **P(ALTA)** e **Sinal** (usando o **Threshold** da lateral).",
+        icon="ℹ️",
+    )
+
     date_options = df["Data"].dt.date.tolist()
     selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1, key="hist_date")
 
@@ -696,6 +740,13 @@ with tab_historico:
 # =========================
 with tab_diag:
     st.subheader("Painel explícito de métricas (fixas do Colab — sem re-treino)")
+
+    # ✅ TEXTO CURTO NO LUGAR CERTO
+    st.info(
+        "Este painel mostra as **métricas do treinamento no Colab** (fixas, sem re-treino aqui) "
+        "e um resumo do período do dataset carregado.",
+        icon="ℹ️",
+    )
 
     st.caption(f"Modelo: {METRICAS_COLAB['modelo']}")
     st.caption(f"Validação: {METRICAS_COLAB['janela_validacao']}")
