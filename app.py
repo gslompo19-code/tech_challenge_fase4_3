@@ -278,97 +278,75 @@ def make_signal_chart(df_plot, pred, proba, threshold, title):
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.10,
-        row_heights=[0.70, 0.30],
+        vertical_spacing=0.08,
+        row_heights=[0.68, 0.32],
+        subplot_titles=("Preço (corrigido) + Sinal", "Probabilidade P(ALTA)")
     )
 
-    # Preço
-    fig.add_trace(
-        go.Scatter(x=dates, y=price_vals, mode="lines", name="Preço"),
-        row=1, col=1
-    )
-
-    # Marcadores (menores)
+    # ===== Preço =====
     fig.add_trace(
         go.Scatter(
-            x=dates, y=np.where(pred == 1, price_vals, np.nan),
-            mode="markers", name="ALTA",
-            marker=dict(size=7, symbol="triangle-up"),
+            x=dates,
+            y=price_vals,
+            mode="lines",
+            name="Preço (Último)",
+            line=dict(width=2)
         ),
         row=1, col=1
     )
 
-    # Probabilidade (sem fill)
+    # ===== Sinais =====
     fig.add_trace(
         go.Scatter(
-            x=dates, y=proba, mode="lines", name="P(ALTA)"
+            x=dates,
+            y=np.where(pred == 1, price_vals, np.nan),
+            mode="markers",
+            name="ALTA",
+            marker=dict(
+                size=9,
+                symbol="triangle-up"
+            )
+        ),
+        row=1, col=1
+    )
+
+    # ===== Probabilidade P(ALTA) =====
+    fig.add_trace(
+        go.Scatter(
+            x=dates,
+            y=proba,
+            mode="lines",
+            name="P(ALTA)",
+            line=dict(width=2),
+            fill="tozeroy",
+            fillcolor="rgba(0, 123, 255, 0.25)"  # ✅ azul neutro, sem vermelho
         ),
         row=2, col=1
     )
 
-    # Threshold (sem annotation para não "invadir" a área)
+    # ===== Threshold =====
     fig.add_hline(
-        y=threshold, line_dash="dash", line_width=2,
-        row=2, col=1
+        y=threshold,
+        line_dash="dash",
+        line_width=2,
+        annotation_text=f"threshold = {threshold:.2f}",
+        annotation_position="top left",
+        row=2,
+        col=1
     )
 
     fig.update_layout(
-        height=460,
-        margin=dict(l=10, r=10, t=45, b=10),
+        height=620,
+        margin=dict(l=10, r=10, t=70, b=10),
+        legend=dict(orientation="h"),
         title=title,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
+
     fig.update_yaxes(title_text="Preço", row=1, col=1)
     fig.update_yaxes(title_text="P(ALTA)", range=[0, 1], row=2, col=1)
 
-    # Remove rangeslider para evitar cortes/overlap
-    fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
-    fig.update_xaxes(rangeslider_visible=False, row=2, col=1)
-    return fig
+    fig.update_xaxes(rangeslider_visible=True)
 
-
-def predict_proba_batch(model, scaler, X, threshold):
-    X = np.asarray(X, dtype=float)
-
-    if X.ndim == 1:
-        X = X.reshape(1, -1)
-
-    if not np.isfinite(X).all():
-        raise ValueError(
-            "Features com NaN/inf. A simulação precisa de mais histórico "
-            "(janelas 20/30) ou cenário menos agressivo."
-        )
-
-    Xs = scaler.transform(X)
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(Xs)[:, 1]
-    else:
-        proba = model.predict(Xs).astype(float)
-
-    pred = (proba >= threshold).astype(int)
-    return pred, proba
-
-
-def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
-    cm = np.array(cm, dtype=int)
-    x = [f"Prev: {labels[0]}", f"Prev: {labels[1]}"]
-    y = [f"Real: {labels[0]}", f"Real: {labels[1]}"]
-
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=cm,
-            x=x,
-            y=y,
-            text=cm,
-            texttemplate="%{text}",
-            hovertemplate="",
-        )
-    )
-    fig.update_layout(
-        title="Matriz de Confusão (valores do Colab)",
-        height=420,
-        margin=dict(l=10, r=10, t=50, b=10)
-    )
     return fig
 
 
