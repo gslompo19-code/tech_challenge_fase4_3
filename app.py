@@ -551,7 +551,7 @@ tab_produto, tab_historico, tab_diag, tab_entrada = st.tabs(
 # TAB 1 — PRODUTO (SIMULAÇÃO FUTURA)
 # =========================
 with tab_produto:
-    st.subheader("Produto: Simulação futura (data manual, sem travar)")
+    st.subheader("Simulação futura")
     st.info(
         "Aqui você escolhe uma **data futura** e um **cenário**. Como não existe preço real do futuro no CSV, "
         "o app **simula uma trajetória de preços** até a data escolhida e calcula **P(ALTA)** e **Sinal** "
