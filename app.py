@@ -498,7 +498,7 @@ except Exception as e:
 df, features = load_df_and_features(DEFAULT_CSV)
 
 tab_produto, tab_historico, tab_diag = st.tabs(
-    ["🧠 Produto (Simulação futura)", "📅 Histórico (data do dataset)", "🔎 Diagnóstico (métricas)"]
+    ["🧠 Simulação Futura", "📅 Histórico ", "🔎 Diagnóstico "]
 )
 
 # =========================
