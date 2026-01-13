@@ -335,7 +335,7 @@ except Exception as e:
 
 df, features = load_df_and_features(DEFAULT_CSV)
 
-tab_produto, tab_futuro, tab_diag = st.tabs(["🧠 Produto", "🔮 Simulação futura (30 dias)", "🔎 Diagnóstico (métricas)"])
+tab_produto, tab_futuro, tab_diag = st.tabs(["🧠 Produto", "🔮 Simulação futura (data manual)", "🔎 Diagnóstico (métricas)"])
 
 with tab_produto:
     st.subheader("Produto: selecione uma data e obtenha a tendência do dia seguinte")
@@ -367,17 +367,28 @@ with tab_produto:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab_futuro:
-    st.subheader("Simulação futura (cenário) por 30 dias")
+    st.subheader("Simulação futura (cenário) até uma data escolhida")
     st.write(
         "Como não existe preço real futuro no dataset, aqui é uma **simulação de cenário**: "
         "você define um retorno diário e o modelo classifica ALTA/BAIXA para cada dia simulado."
     )
 
-    last_date = df["Data"].iloc[-1]
+    last_date = pd.to_datetime(df["Data"].iloc[-1])
     last_price = float(df["Último"].iloc[-1])
     last_vol = float(df["Vol."].iloc[-1]) if pd.notna(df["Vol."].iloc[-1]) else 0.0
 
-    st.info(f"Último ponto: {last_date.date()} — Último={last_price:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    st.info(
+        f"Último ponto: {last_date.date()} — Último={last_price:,.2f}"
+        .replace(",", "X").replace(".", ",").replace("X", ".")
+    )
+
+    alvo = st.date_input("Digite/Selecione a data futura", value=(last_date + timedelta(days=30)).date())
+    if alvo <= last_date.date():
+        st.error("A data precisa ser futura (maior que a última data do CSV).")
+        st.stop()
+
+    horizon = int((pd.to_datetime(alvo) - pd.to_datetime(last_date.date())).days)
+    st.write(f"Dias simulados até a data alvo: **{horizon}**")
 
     mode = st.selectbox("Cenário", ["Constante", "Constante + Ruído", "Aleatório (volatilidade)"])
     if mode == "Constante":
@@ -393,7 +404,6 @@ with tab_futuro:
     seed = st.number_input("Seed", value=42, step=1)
     np.random.seed(int(seed))
 
-    horizon = 30
     future_dates = [last_date + timedelta(days=i) for i in range(1, horizon + 1)]
     rets = np.random.normal(loc=mu, scale=sigma, size=horizon)
 
@@ -415,6 +425,7 @@ with tab_futuro:
     full = pd.concat([base, fut], ignore_index=True).sort_values("Data").reset_index(drop=True)
     full = correcao_escala_por_vizinhanca(full)
 
+    # Recalcular features no full
     full["var_pct"] = full["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         full[f"mm_{dias}"] = full["Último"].rolling(dias, min_periods=dias).mean()
@@ -465,7 +476,7 @@ with tab_futuro:
     future_block = future_block.dropna(subset=features)
 
     if len(future_block) == 0:
-        st.error("Sem features suficientes para os 30 dias. Ajuste o cenário.")
+        st.error("Sem features suficientes. A data precisa estar mais distante (janelas 20/30) ou o cenário gerou NaNs.")
         st.stop()
 
     Xf = future_block[features].values
@@ -474,6 +485,22 @@ with tab_futuro:
     future_block["P(ALTA)"] = proba_f
     future_block["Sinal"] = np.where(pred_f == 1, "ALTA", "BAIXA")
 
+    # pega a previsão exatamente na data alvo (se existir), senão a última válida antes dela
+    alvo_ts = pd.to_datetime(alvo)
+    if (future_block["Data"] == alvo_ts).any():
+        row = future_block.loc[future_block["Data"] == alvo_ts].iloc[0]
+    else:
+        row = future_block.iloc[-1]
+
+    sinal_alvo = 1 if float(row["P(ALTA)"]) >= threshold else 0
+    proba_alvo = float(row["P(ALTA)"])
+    data_real_alvo = pd.to_datetime(row["Data"]).date()
+
+    if sinal_alvo == 1:
+        st.success(f"📈 Tendência prevista para **{data_real_alvo}**: **ALTA** — P(ALTA)={proba_alvo:.2%}")
+    else:
+        st.warning(f"📉 Tendência prevista para **{data_real_alvo}**: **BAIXA** — P(ALTA)={proba_alvo:.2%}")
+
     st.dataframe(future_block[["Data", "Último", "P(ALTA)", "Sinal"]], use_container_width=True)
 
     fig2 = make_signal_chart(
@@ -481,7 +508,7 @@ with tab_futuro:
         pred=pred_f,
         proba=proba_f,
         threshold=threshold,
-        title="Simulação futura (30 dias) — sinais do modelo",
+        title=f"Simulação futura — sinais do modelo (até {alvo})",
     )
     st.plotly_chart(fig2, use_container_width=True)
 
