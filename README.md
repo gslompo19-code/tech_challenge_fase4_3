@@ -105,7 +105,8 @@ Calendário: dia (dia da semana)
 🛡️ Há proteções contra NaN/Inf e uma correção de escala por vizinhança para lidar com valores fora de escala no histórico.
 
 📁 Estrutura do repositório (recomendada)
-.
+
+
 ├── app.py
 ├── Dados Ibovespa (2).csv
 ├── modelo_catboost.pkl
