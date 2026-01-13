@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 import joblib
 
@@ -20,7 +19,6 @@ DEFAULT_CSV = "Dados Ibovespa (2).csv"
 MODEL_PATH = "modelo_catboost.pkl"
 SCALER_PATH = "scaler_minmax.pkl"
 
-# Logs (simples e robusto)
 LOG_DIR = "logs"
 LOG_CSV_PATH = os.path.join(LOG_DIR, "usage_log.csv")
 LOG_JSONL_PATH = os.path.join(LOG_DIR, "usage_log.jsonl")
@@ -37,8 +35,7 @@ METRICAS_COLAB = {
     "acc_train": 0.8203,
     "acc_test": 0.8000,
     "overfit": 0.0203,
-    "cm": [[13, 3],
-           [3, 11]],
+    "cm": [[13, 3], [3, 11]],
     "report": """precision    recall  f1-score   support
 
 0       0.81      0.81      0.81        16
@@ -51,7 +48,7 @@ weighted avg    0.80      0.80      0.80        30"""
 
 
 # =========================
-# LOG DE USO (CSV + JSONL) - best effort
+# LOG DE USO (CSV + JSONL)
 # =========================
 def _ensure_log_dir():
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -72,11 +69,9 @@ def append_usage_log(event: dict):
             **event,
         }
 
-        # JSONL
         with open(LOG_JSONL_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-        # CSV
         df_row = pd.DataFrame([payload])
         if os.path.exists(LOG_CSV_PATH):
             df_row.to_csv(LOG_CSV_PATH, mode="a", header=False, index=False, encoding="utf-8")
@@ -87,7 +82,7 @@ def append_usage_log(event: dict):
 
 
 # =========================
-# Funções do Colab
+# Funções de features
 # =========================
 def volume_to_float(value):
     if isinstance(value, str):
@@ -125,7 +120,6 @@ def macd_components(prices, short=12, long=26, signal=9):
 def obv_series(data):
     vol = pd.to_numeric(data["Vol."], errors="coerce").fillna(0.0).values
     close = pd.to_numeric(data["Último"], errors="coerce").values
-
     obv = [0.0]
     for i in range(1, len(data)):
         if close[i] > close[i - 1]:
@@ -140,7 +134,7 @@ def obv_series(data):
 def zscore_roll(s: pd.Series, w: int = 20, eps: float = 1e-9) -> pd.Series:
     m = s.rolling(w, min_periods=w).mean()
     sd = s.rolling(w, min_periods=w).std()
-    sd = sd.where(sd > eps, np.nan)  # evita inf quando std ~ 0
+    sd = sd.where(sd > eps, np.nan)
     return (s - m) / sd
 
 
@@ -161,24 +155,18 @@ def correcao_escala_por_vizinhanca(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def carregar_dados(caminho_csv):
-    df = pd.read_csv(caminho_csv)
-    df.columns = df.columns.str.strip()
-    df["Data"] = pd.to_datetime(df["Data"], format="%d.%m.%Y", errors="coerce")
-    df = df.sort_values("Data").dropna(subset=["Data"])
+def compute_features_inplace(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aplica o mesmo pipeline de features no dataframe recebido.
+    Espera colunas: Data, Vol., Último, Abertura, Máxima, Mínima
+    """
+    df = df.copy()
+    df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+    df = df.dropna(subset=["Data"]).sort_values("Data").reset_index(drop=True)
 
-    df["Vol."] = df["Vol."].apply(volume_to_float)
-
-    for coluna in ["Último", "Abertura", "Máxima", "Mínima"]:
-        df[coluna] = (
-            df[coluna].astype(str)
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".", regex=False)
-        )
-        df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
-
-    df = correcao_escala_por_vizinhanca(df)
-    df = df.sort_values("Data").reset_index(drop=True)
+    # garante numéricos
+    for c in ["Último", "Abertura", "Máxima", "Mínima", "Vol."]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df["var_pct"] = df["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
@@ -209,9 +197,6 @@ def carregar_dados(caminho_csv):
 
     df["obv"] = obv_series(df)
 
-    df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
-    df = df.iloc[:-1].copy()
-
     df["ret_1d"] = df["Último"].pct_change()
     df["log_ret"] = np.log(df["Último"]).diff()
     df["ret_5d"] = df["Último"].pct_change(5)
@@ -229,6 +214,32 @@ def carregar_dados(caminho_csv):
     df["z_rsi_20"] = zscore_roll(df["rsi"], 20)
     df["z_macd_20"] = zscore_roll(df["macd"], 20)
 
+    return df
+
+
+def carregar_dados(caminho_csv):
+    df = pd.read_csv(caminho_csv)
+    df.columns = df.columns.str.strip()
+
+    df["Data"] = pd.to_datetime(df["Data"], format="%d.%m.%Y", errors="coerce")
+    df = df.dropna(subset=["Data"]).sort_values("Data")
+
+    df["Vol."] = df["Vol."].apply(volume_to_float)
+
+    for coluna in ["Último", "Abertura", "Máxima", "Mínima"]:
+        df[coluna] = (
+            df[coluna].astype(str)
+            .str.replace(".", "", regex=False)
+            .str.replace(",", ".", regex=False)
+        )
+        df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
+
+    df = correcao_escala_por_vizinhanca(df).sort_values("Data").reset_index(drop=True)
+    df = compute_features_inplace(df)
+
+    df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
+    df = df.iloc[:-1].copy()
+
     features_sugeridas = [
         "ret_1d", "log_ret", "ret_5d", "rv_20",
         "atr_pct", "bb_largura", "desvio_mm3_pct",
@@ -237,6 +248,7 @@ def carregar_dados(caminho_csv):
         "dia", "z_close_20", "z_rsi_20", "z_macd_20"
     ]
 
+    df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=features_sugeridas + ["Alvo"]).copy()
     df.attrs["features_sugeridas"] = features_sugeridas
     return df
@@ -282,106 +294,94 @@ def predict_proba_batch(model, scaler, X, threshold):
         proba = model.predict_proba(Xs)[:, 1]
     else:
         proba = model.predict(Xs).astype(float)
+
     pred = (proba >= threshold).astype(int)
     return pred, proba
 
 
 # =========================
-# Gráficos (corrigido: selector/slider SEM conflito xaxis/xaxis2)
+# Gráfico Intuitivo (1 painel, 2 eixos, SEM conflito)
 # =========================
-def make_signal_chart(
+def make_signal_chart_intuitivo(
     df_plot: pd.DataFrame,
     pred,
     proba,
     threshold: float,
     title: str,
-    show_baixa: bool = False,
-    show_fill: bool = True,
     height: int = 560,
     show_rangeslider: bool = True,
 ):
     df_plot = df_plot.copy()
-    df_plot["Data"] = pd.to_datetime(df_plot["Data"])
-    price_vals = df_plot["Último"].astype(float).values
-    dates = df_plot["Data"].values
+    df_plot["Data"] = pd.to_datetime(df_plot["Data"], errors="coerce")
+    df_plot = df_plot.dropna(subset=["Data"]).sort_values("Data")
 
     pred = np.asarray(pred, dtype=int)
     proba = np.asarray(proba, dtype=float)
 
-    # alinhar tamanhos
     n = min(len(df_plot), len(pred), len(proba))
     df_plot = df_plot.iloc[:n].copy()
-    price_vals = price_vals[:n]
-    dates = dates[:n]
     pred = pred[:n]
     proba = proba[:n]
 
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.10,
-        row_heights=[0.68, 0.32],
-        subplot_titles=("Preço (Último) + Sinais", "Probabilidade do modelo — P(ALTA)")
-    )
+    dates = df_plot["Data"]
+    price = df_plot["Último"].astype(float).values
+
+    y_alta = np.where(pred == 1, price, np.nan)
+    y_baixa = np.where(pred == 0, price, np.nan)
+
+    fig = go.Figure()
 
     fig.add_trace(
         go.Scattergl(
-            x=dates, y=price_vals,
+            x=dates, y=price,
             mode="lines",
             name="Preço (Último)",
             line=dict(width=2),
             hovertemplate="<b>%{x|%d/%m/%Y}</b><br>Preço: %{y:,.2f}<extra></extra>",
-        ),
-        row=1, col=1
+        )
     )
 
     fig.add_trace(
         go.Scattergl(
-            x=dates,
-            y=np.where(pred == 1, price_vals, np.nan),
+            x=dates, y=y_alta,
             mode="markers",
             name="Sinal: ALTA",
             marker=dict(size=9, symbol="triangle-up"),
             hovertemplate="<b>%{x|%d/%m/%Y}</b><br><b>Sinal:</b> ALTA<br>Preço: %{y:,.2f}<extra></extra>",
-        ),
-        row=1, col=1
+        )
     )
 
-    if show_baixa:
-        fig.add_trace(
-            go.Scattergl(
-                x=dates,
-                y=np.where(pred == 0, price_vals, np.nan),
-                mode="markers",
-                name="Sinal: BAIXA",
-                marker=dict(size=8, symbol="triangle-down"),
-                hovertemplate="<b>%{x|%d/%m/%Y}</b><br><b>Sinal:</b> BAIXA<br>Preço: %{y:,.2f}<extra></extra>",
-            ),
-            row=1, col=1
+    fig.add_trace(
+        go.Scattergl(
+            x=dates, y=y_baixa,
+            mode="markers",
+            name="Sinal: BAIXA",
+            marker=dict(size=8, symbol="triangle-down"),
+            hovertemplate="<b>%{x|%d/%m/%Y}</b><br><b>Sinal:</b> BAIXA<br>Preço: %{y:,.2f}<extra></extra>",
         )
-
-    fill = "tozeroy" if show_fill else None
-    fillcolor = "rgba(0, 123, 255, 0.18)" if show_fill else None
+    )
 
     fig.add_trace(
         go.Scattergl(
             x=dates, y=proba,
             mode="lines",
             name="P(ALTA)",
+            yaxis="y2",
             line=dict(width=2),
-            fill=fill,
-            fillcolor=fillcolor,
             hovertemplate="<b>%{x|%d/%m/%Y}</b><br>P(ALTA): %{y:.3f}<extra></extra>",
-        ),
-        row=2, col=1
+        )
     )
 
-    fig.add_hline(
-        y=float(threshold),
-        line_dash="dash",
-        line_width=2,
-        annotation_text=f"threshold={threshold:.2f}",
-        row=2, col=1
+    fig.add_trace(
+        go.Scatter(
+            x=[dates.min(), dates.max()],
+            y=[threshold, threshold],
+            mode="lines",
+            name=f"threshold={threshold:.2f}",
+            yaxis="y2",
+            line=dict(width=2, dash="dash"),
+            hoverinfo="skip",
+        )
     )
 
     fig.update_layout(
@@ -389,49 +389,29 @@ def make_signal_chart(
         title=title,
         height=int(height),
         margin=dict(l=10, r=10, t=70, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         hovermode="x unified",
-    )
-
-    fig.update_yaxes(title_text="Preço", row=1, col=1, showgrid=True)
-    fig.update_yaxes(title_text="P(ALTA)", row=2, col=1, range=[0, 1], showgrid=True)
-
-    # ✅ UM ÚNICO update_xaxes (sem xaxis/xaxis2 conflitarem)
-    fig.update_xaxes(
-        type="date",
-        rangeslider=dict(visible=bool(show_rangeslider)),
-        rangeselector=dict(
-            buttons=[
-                dict(count=1, label="1m", step="month", stepmode="backward"),
-                dict(count=3, label="3m", step="month", stepmode="backward"),
-                dict(count=6, label="6m", step="month", stepmode="backward"),
-                dict(count=12, label="12m", step="month", stepmode="backward"),
-                dict(step="all", label="All"),
-            ]
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        xaxis=dict(
+            type="date",
+            rangeslider=dict(visible=bool(show_rangeslider)),
+            rangeselector=dict(
+                buttons=[
+                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                    dict(count=3, label="3m", step="month", stepmode="backward"),
+                    dict(count=6, label="6m", step="month", stepmode="backward"),
+                    dict(count=12, label="12m", step="month", stepmode="backward"),
+                    dict(step="all", label="All"),
+                ]
+            ),
         ),
-    )
-
-    return fig
-
-
-def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
-    cm = np.array(cm, dtype=int)
-    x = [f"Prev: {labels[0]}", f"Prev: {labels[1]}"]
-    y = [f"Real: {labels[0]}", f"Real: {labels[1]}"]
-
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=cm, x=x, y=y,
-            text=cm, texttemplate="%{text}",
-            hovertemplate="",
-            colorscale="Blues",
-        )
-    )
-    fig.update_layout(
-        template="plotly_white",
-        title="Matriz de Confusão (valores do Colab)",
-        height=420,
-        margin=dict(l=10, r=10, t=50, b=10)
+        yaxis=dict(title="Preço", showgrid=True),
+        yaxis2=dict(
+            title="P(ALTA)",
+            overlaying="y",
+            side="right",
+            range=[0, 1],
+            showgrid=False,
+        ),
     )
     return fig
 
@@ -447,11 +427,9 @@ with st.sidebar:
 
     st.divider()
     st.header("Config do Gráfico")
-    view_n = st.slider("Janela do gráfico (Histórico) — últimos N", 60, 1500, 400, 20)
+    view_n = st.slider("Janela do histórico — últimos N", 60, 1500, 400, 20)
     chart_height = st.slider("Altura do gráfico", 420, 850, 560, 10)
     show_rangeslider = st.checkbox("Mostrar range slider", value=True)
-    show_fill = st.checkbox("Mostrar área preenchida em P(ALTA)", value=True)
-    show_baixa = st.checkbox("Mostrar marcadores de BAIXA", value=False)
 
     st.divider()
     st.subheader("Log de uso")
@@ -544,56 +522,10 @@ with tab_produto:
 
     full = pd.concat([base, fut], ignore_index=True).sort_values("Data").reset_index(drop=True)
     full = correcao_escala_por_vizinhanca(full)
-
-    # Recalcular features no full (mesma lógica)
-    full["var_pct"] = full["Último"].pct_change()
-    for dias in [3, 7, 14, 21, 30]:
-        full[f"mm_{dias}"] = full["Último"].rolling(dias, min_periods=dias).mean()
-    for dias in [5, 10, 20]:
-        full[f"vol_{dias}"] = full["Último"].rolling(dias, min_periods=dias).std()
-
-    full["desvio_mm3"] = full["Último"] - full["mm_3"]
-    full["dia"] = pd.to_datetime(full["Data"]).dt.weekday
-    full["rsi"] = calculate_rsi(full["Último"])
-
-    macd, sinal, hist = macd_components(full["Último"])
-    full["macd"], full["sinal_macd"], full["hist_macd"] = macd, sinal, hist
-
-    bb_media = full["Último"].rolling(20, min_periods=20).mean()
-    bb_std = full["Último"].rolling(20, min_periods=20).std()
-    full["bb_media"] = bb_media
-    full["bb_std"] = bb_std
-    full["bb_sup"] = bb_media + 2 * bb_std
-    full["bb_inf"] = bb_media - 2 * bb_std
-    full["bb_largura"] = (full["bb_sup"] - full["bb_inf"]) / bb_media
-
-    tr1 = full["Máxima"] - full["Mínima"]
-    tr2 = (full["Máxima"] - full["Último"].shift(1)).abs()
-    tr3 = (full["Mínima"] - full["Último"].shift(1)).abs()
-    full["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    full["ATR"] = full["TR"].rolling(14, min_periods=14).mean()
-
-    full["obv"] = obv_series(full)
-
-    full["ret_1d"] = full["Último"].pct_change()
-    full["log_ret"] = np.log(full["Último"]).diff()
-    full["ret_5d"] = full["Último"].pct_change(5)
-    full["rv_20"] = full["ret_1d"].rolling(20, min_periods=20).std()
-
-    full["atr_pct"] = full["ATR"] / full["Último"]
-    full["desvio_mm3_pct"] = (full["desvio_mm3"] / full["mm_3"]).replace([np.inf, -np.inf], np.nan)
-
-    full["vol_log"] = np.log(full["Vol."].clip(lower=1))
-    full["vol_ret"] = full["Vol."].pct_change().replace([np.inf, -np.inf], np.nan)
-
-    full["obv_diff"] = pd.Series(full["obv"]).diff()
-
-    full["z_close_20"] = zscore_roll(full["Último"], 20)
-    full["z_rsi_20"] = zscore_roll(full["rsi"], 20)
-    full["z_macd_20"] = zscore_roll(full["macd"], 20)
+    full = compute_features_inplace(full)
+    full = full.replace([np.inf, -np.inf], np.nan)
 
     future_block_all = full[full["Data"].isin(future_dates)].copy()
-    future_block_all[features] = future_block_all[features].replace([np.inf, -np.inf], np.nan)
 
     mask_valid = future_block_all[features].notna().all(axis=1)
     n_total = int(len(future_block_all))
@@ -667,21 +599,21 @@ with tab_produto:
         "pred_alvo": int(sinal_alvo),
     })
 
-    if sinal_alvo == 1:
-        st.success(f"📈 Tendência prevista para **{data_real_alvo}**: **ALTA** — P(ALTA)={proba_alvo:.2%}")
-    else:
-        st.warning(f"📉 Tendência prevista para **{data_real_alvo}**: **BAIXA** — P(ALTA)={proba_alvo:.2%}")
+    # ===== mini painel "produto"
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Data alvo (escolhida)", str(alvo))
+    c2.metric("Data efetiva (prevista)", str(data_real_alvo))
+    c3.metric("P(ALTA)", f"{proba_alvo:.2%}")
+    c4.metric("Sinal", "ALTA" if sinal_alvo == 1 else "BAIXA")
 
     st.dataframe(future_block[["Data", "Último", "P(ALTA)", "Sinal"]], use_container_width=True)
 
-    fig2 = make_signal_chart(
+    fig2 = make_signal_chart_intuitivo(
         df_plot=future_block,
         pred=(future_block["P(ALTA)"].values >= threshold).astype(int),
         proba=future_block["P(ALTA)"].values,
         threshold=threshold,
-        title=f"Simulação futura — sinais do modelo (até {alvo})",
-        show_baixa=show_baixa,
-        show_fill=show_fill,
+        title=f"Simulação futura — preço + probabilidade (até {alvo})",
         height=chart_height,
         show_rangeslider=show_rangeslider,
     )
@@ -725,14 +657,12 @@ with tab_historico:
     X_plot = df_plot[features].values
     pred_plot, proba_plot = predict_proba_batch(model, scaler, X_plot, threshold)
 
-    fig = make_signal_chart(
+    fig = make_signal_chart_intuitivo(
         df_plot=df_plot,
         pred=pred_plot,
         proba=proba_plot,
         threshold=threshold,
-        title="Histórico + Sinais do modelo",
-        show_baixa=show_baixa,
-        show_fill=show_fill,
+        title="Histórico — preço + probabilidade",
         height=chart_height,
         show_rangeslider=show_rangeslider,
     )
@@ -755,21 +685,25 @@ with tab_diag:
 
     st.divider()
 
-    cm = METRICAS_COLAB["cm"]
+    cm = np.array(METRICAS_COLAB["cm"], dtype=int)
     cm_df = pd.DataFrame(
         cm,
         index=["Real: Queda (0)", "Real: Alta (1)"],
         columns=["Prev: Queda (0)", "Prev: Alta (1)"]
     )
+    st.dataframe(cm_df, use_container_width=True)
 
-    colA, colB = st.columns([1, 1.2])
-    with colA:
-        st.write("Matriz de confusão (tabela):")
-        st.dataframe(cm_df, use_container_width=True)
-
-    with colB:
-        st.write("Matriz de confusão (gráfico):")
-        st.plotly_chart(plot_confusion_matrix(cm), use_container_width=True, config={"displaylogo": False})
+    fig_cm = go.Figure(data=go.Heatmap(
+        z=cm,
+        x=list(cm_df.columns),
+        y=list(cm_df.index),
+        text=cm,
+        texttemplate="%{text}",
+        colorscale="Blues",
+        hovertemplate="",
+    ))
+    fig_cm.update_layout(template="plotly_white", height=420, title="Matriz de Confusão (valores do Colab)")
+    st.plotly_chart(fig_cm, use_container_width=True, config={"displaylogo": False})
 
     st.divider()
     st.write("Classification report (do Colab):")
