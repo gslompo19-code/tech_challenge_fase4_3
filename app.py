@@ -430,7 +430,7 @@ def make_signal_chart_intuitivo(
 # =========================
 # App
 # =========================
-st.title("📈 IBOV TrendLab-Previsão de Movimento do Ibovespa")
+st.title("📈 IBOV TrendLab - Previsão de Movimento do Ibovespa")
 
 with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
     st.markdown(
