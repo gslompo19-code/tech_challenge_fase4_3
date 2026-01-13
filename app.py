@@ -123,7 +123,6 @@ def macd_components(prices, short=12, long=26, signal=9):
 
 
 def obv_series(data):
-    # robusto a NaN em volume
     vol = pd.to_numeric(data["Vol."], errors="coerce").fillna(0.0).values
     close = pd.to_numeric(data["Último"], errors="coerce").values
 
@@ -139,21 +138,13 @@ def obv_series(data):
 
 
 def zscore_roll(s: pd.Series, w: int = 20, eps: float = 1e-9) -> pd.Series:
-    """
-    Z-score rolling mais robusto:
-    - mantém NaN enquanto não houver janela completa
-    - evita inf quando std ~ 0 (deixa NaN nesse caso)
-    """
     m = s.rolling(w, min_periods=w).mean()
     sd = s.rolling(w, min_periods=w).std()
-    sd = sd.where(sd > eps, np.nan)
+    sd = sd.where(sd > eps, np.nan)  # evita inf quando std ~ 0
     return (s - m) / sd
 
 
 def correcao_escala_por_vizinhanca(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Patch para corrigir 'Último' quando vem 10x/100x/1000x menor.
-    """
     df = df.copy()
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df["Último"] = pd.to_numeric(df["Último"], errors="coerce")
@@ -186,11 +177,9 @@ def carregar_dados(caminho_csv):
         )
         df[coluna] = pd.to_numeric(df[coluna], errors="coerce")
 
-    # PATCH
     df = correcao_escala_por_vizinhanca(df)
     df = df.sort_values("Data").reset_index(drop=True)
 
-    # Features base
     df["var_pct"] = df["Último"].pct_change()
     for dias in [3, 7, 14, 21, 30]:
         df[f"mm_{dias}"] = df["Último"].rolling(dias, min_periods=dias).mean()
@@ -220,11 +209,9 @@ def carregar_dados(caminho_csv):
 
     df["obv"] = obv_series(df)
 
-    # alvo
     df["Alvo"] = (df["Último"].shift(-1) > df["Último"]).astype("int8")
     df = df.iloc[:-1].copy()
 
-    # retornos/volatilidades
     df["ret_1d"] = df["Último"].pct_change()
     df["log_ret"] = np.log(df["Último"]).diff()
     df["ret_5d"] = df["Último"].pct_change(5)
@@ -250,14 +237,13 @@ def carregar_dados(caminho_csv):
         "dia", "z_close_20", "z_rsi_20", "z_macd_20"
     ]
 
-    # limpeza final (inclui NaN vindos de janelas)
     df = df.dropna(subset=features_sugeridas + ["Alvo"]).copy()
     df.attrs["features_sugeridas"] = features_sugeridas
     return df
 
 
 # =========================
-# Cache de carga
+# Cache
 # =========================
 @st.cache_resource
 def load_model_and_scaler():
@@ -301,11 +287,7 @@ def predict_proba_batch(model, scaler, X, threshold):
 
 
 # =========================
-# Gráficos (mais profissionais e intuitivos)
-# - Hover unificado (cursor vertical)
-# - Rangeselector (1m/3m/6m/YTD/All)
-# - Rangeslider sem duplicar (evita sobreposição)
-# - Tooltips ricos (Preço, P(ALTA), Sinal)
+# Gráficos (corrigido: selector/slider SEM conflito xaxis/xaxis2)
 # =========================
 def make_signal_chart(
     df_plot: pd.DataFrame,
@@ -326,7 +308,7 @@ def make_signal_chart(
     pred = np.asarray(pred, dtype=int)
     proba = np.asarray(proba, dtype=float)
 
-    # Segurança: alinhar tamanhos
+    # alinhar tamanhos
     n = min(len(df_plot), len(pred), len(proba))
     df_plot = df_plot.iloc[:n].copy()
     price_vals = price_vals[:n]
@@ -342,7 +324,6 @@ def make_signal_chart(
         subplot_titles=("Preço (Último) + Sinais", "Probabilidade do modelo — P(ALTA)")
     )
 
-    # --- Preço ---
     fig.add_trace(
         go.Scattergl(
             x=dates, y=price_vals,
@@ -354,7 +335,6 @@ def make_signal_chart(
         row=1, col=1
     )
 
-    # --- Marcadores ALTA ---
     fig.add_trace(
         go.Scattergl(
             x=dates,
@@ -367,7 +347,6 @@ def make_signal_chart(
         row=1, col=1
     )
 
-    # --- Marcadores BAIXA (opcional) ---
     if show_baixa:
         fig.add_trace(
             go.Scattergl(
@@ -381,7 +360,6 @@ def make_signal_chart(
             row=1, col=1
         )
 
-    # --- Probabilidade ---
     fill = "tozeroy" if show_fill else None
     fillcolor = "rgba(0, 123, 255, 0.18)" if show_fill else None
 
@@ -398,7 +376,6 @@ def make_signal_chart(
         row=2, col=1
     )
 
-    # Threshold
     fig.add_hline(
         y=float(threshold),
         line_dash="dash",
@@ -407,7 +384,6 @@ def make_signal_chart(
         row=2, col=1
     )
 
-    # Estética mais profissional
     fig.update_layout(
         template="plotly_white",
         title=title,
@@ -420,25 +396,19 @@ def make_signal_chart(
     fig.update_yaxes(title_text="Preço", row=1, col=1, showgrid=True)
     fig.update_yaxes(title_text="P(ALTA)", row=2, col=1, range=[0, 1], showgrid=True)
 
-    # Rangeselector + rangeslider (SEM DUPLICAR)
+    # ✅ UM ÚNICO update_xaxes (sem xaxis/xaxis2 conflitarem)
     fig.update_xaxes(
+        type="date",
+        rangeslider=dict(visible=bool(show_rangeslider)),
         rangeselector=dict(
-            buttons=list([
+            buttons=[
                 dict(count=1, label="1m", step="month", stepmode="backward"),
                 dict(count=3, label="3m", step="month", stepmode="backward"),
                 dict(count=6, label="6m", step="month", stepmode="backward"),
-                dict(step="year", stepmode="todate", label="YTD"),
+                dict(count=12, label="12m", step="month", stepmode="backward"),
                 dict(step="all", label="All"),
-            ])
+            ]
         ),
-        row=2, col=1
-    )
-
-    # Desliga em todos e liga só no 1º eixo (xaxis)
-    fig.update_xaxes(rangeslider_visible=False)
-    fig.update_layout(
-        xaxis=dict(rangeslider=dict(visible=bool(show_rangeslider))),
-        xaxis2=dict(rangeslider=dict(visible=False)),
     )
 
     return fig
@@ -482,7 +452,6 @@ with st.sidebar:
     show_rangeslider = st.checkbox("Mostrar range slider", value=True)
     show_fill = st.checkbox("Mostrar área preenchida em P(ALTA)", value=True)
     show_baixa = st.checkbox("Mostrar marcadores de BAIXA", value=False)
-    st.caption("Patch de escala do `Último` aplicado (corrige gráfico 'pente').")
 
     st.divider()
     st.subheader("Log de uso")
@@ -510,7 +479,6 @@ except Exception as e:
 
 df, features = load_df_and_features(DEFAULT_CSV)
 
-# Abas invertidas: Produto = simulação futura
 tab_produto, tab_historico, tab_diag = st.tabs(
     ["🧠 Produto (Simulação futura)", "📅 Histórico (data do dataset)", "🔎 Diagnóstico (métricas)"]
 )
@@ -624,15 +592,10 @@ with tab_produto:
     full["z_rsi_20"] = zscore_roll(full["rsi"], 20)
     full["z_macd_20"] = zscore_roll(full["macd"], 20)
 
-    # ===== versão à prova de qualquer cenário =====
     future_block_all = full[full["Data"].isin(future_dates)].copy()
-
-    # mata inf/-inf
     future_block_all[features] = future_block_all[features].replace([np.inf, -np.inf], np.nan)
 
-    # valida por linha
     mask_valid = future_block_all[features].notna().all(axis=1)
-
     n_total = int(len(future_block_all))
     n_valid = int(mask_valid.sum())
     n_drop = n_total - n_valid
@@ -650,7 +613,7 @@ with tab_produto:
 
     if n_valid == 0:
         st.warning(
-            "Nenhum dia simulado ficou válido para previsão (todas as linhas tinham NaN/Inf nas features). "
+            "Nenhum dia simulado ficou válido para previsão. "
             "Tente uma data mais distante (mais histórico para janelas 20/30) ou ajuste o cenário (mu/sigma)."
         )
         append_usage_log({
@@ -669,14 +632,12 @@ with tab_produto:
         })
         st.stop()
 
-    # predição só para dias válidos
     Xf = future_block[features].values
     pred_f, proba_f = predict_proba_batch(model, scaler, Xf, threshold)
 
     future_block["P(ALTA)"] = proba_f
     future_block["Sinal"] = np.where(pred_f == 1, "ALTA", "BAIXA")
 
-    # pega previsão na data alvo, senão último válido <= alvo
     alvo_ts = pd.to_datetime(alvo)
     if (future_block["Data"] == alvo_ts).any():
         row = future_block.loc[future_block["Data"] == alvo_ts].iloc[0]
@@ -727,7 +688,7 @@ with tab_produto:
     st.plotly_chart(fig2, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
 
 # =========================
-# TAB 2 — HISTÓRICO (DATA DO DATASET)
+# TAB 2 — HISTÓRICO
 # =========================
 with tab_historico:
     st.subheader("Histórico: selecione uma data do dataset e obtenha a tendência do dia seguinte")
@@ -756,7 +717,6 @@ with tab_historico:
     else:
         st.warning(f"📉 Tendência prevista (dia seguinte): **BAIXA** — P(ALTA)={p:.2%}")
 
-    st.write("Linha do dia selecionado (já com `Último` corrigido):")
     cols_show = ["Data", "Último", "Vol.", "rsi", "macd", "bb_largura", "atr_pct", "Alvo"]
     cols_show = [c for c in cols_show if c in df.columns]
     st.dataframe(df.loc[[idx], cols_show], use_container_width=True)
@@ -812,13 +772,10 @@ with tab_diag:
         st.plotly_chart(plot_confusion_matrix(cm), use_container_width=True, config={"displaylogo": False})
 
     st.divider()
-
     st.write("Classification report (do Colab):")
     st.code(METRICAS_COLAB["report"])
 
     st.divider()
-
-    st.write("Diagnóstico rápido do dataset carregado (para auditoria):")
     d1, d2, d3 = st.columns(3)
     d1.metric("Linhas válidas (features)", len(df))
     d2.metric("Data inicial", str(df["Data"].iloc[0].date()))
