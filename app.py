@@ -131,10 +131,18 @@ def obv_series(data):
     return obv
 
 
-def zscore_roll(s: pd.Series, w: int = 20, eps: float = 1e-9) -> pd.Series:
+def zscore_roll(s: pd.Series, w: int = 20, eps: float = 1e-6) -> pd.Series:
+    """
+    ✅ Correção importante:
+    Em cenários "constantes", o desvio padrão pode virar 0 -> zscore ficava NaN e você descartava quase tudo.
+    Aqui, quando std ~ 0, usamos eps (não vira NaN), então o zscore fica ~0 e o gráfico passa a acompanhar a simulação.
+    """
     m = s.rolling(w, min_periods=w).mean()
     sd = s.rolling(w, min_periods=w).std()
-    sd = sd.where(sd > eps, np.nan)
+
+    # evita divisão por zero/valores ínfimos
+    sd = sd.mask(sd < eps, eps)
+
     return (s - m) / sd
 
 
@@ -156,10 +164,6 @@ def correcao_escala_por_vizinhanca(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_features_inplace(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aplica o pipeline de features no dataframe recebido.
-    Espera colunas: Data, Vol., Último, Abertura, Máxima, Mínima
-    """
     df = df.copy()
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df = df.dropna(subset=["Data"]).sort_values("Data").reset_index(drop=True)
@@ -285,8 +289,8 @@ def predict_proba_batch(model, scaler, X, threshold):
     if X.shape[0] == 0:
         return np.array([], dtype=int), np.array([], dtype=float)
 
-    if not np.isfinite(X).all():
-        raise ValueError("Ainda há NaN/Inf em X. Limpe antes de chamar predict_proba_batch().")
+    # proteção final
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
     Xs = scaler.transform(X)
     if hasattr(model, "predict_proba"):
@@ -299,7 +303,7 @@ def predict_proba_batch(model, scaler, X, threshold):
 
 
 # =========================
-# Gráfico Intuitivo (1 painel, 2 eixos, SEM conflito e SEM travar estado antigo)
+# Gráfico Intuitivo (1 painel, 2 eixos)
 # =========================
 def make_signal_chart_intuitivo(
     df_plot: pd.DataFrame,
@@ -413,7 +417,7 @@ def make_signal_chart_intuitivo(
         ),
     )
 
-    # ✅ força o eixo X a acompanhar o dataframe (evita ficar "preso" em faixa antiga)
+    # ✅ força o eixo X a acompanhar o dataframe (evita “segurar” janela antiga)
     fig.update_xaxes(range=[dates.min(), dates.max()])
 
     return fig
@@ -431,7 +435,7 @@ with st.sidebar:
     st.divider()
     st.header("Config do Gráfico")
     view_n = st.slider("Janela do histórico — últimos N", 60, 1500, 400, 20)
-    chart_height = st.slider("Altura do gráfico", 420, 850, 560, 10)
+    chart_height = st.slider("Altura do gráfico", 420, 900, 560, 10)
     show_rangeslider = st.checkbox("Mostrar range slider", value=True)
 
     st.divider()
@@ -483,28 +487,39 @@ with tab_produto:
         .replace(",", "X").replace(".", ",").replace("X", ".")
     )
 
-    alvo = st.date_input("Digite/Selecione a data futura", value=(last_date + timedelta(days=30)).date())
+    alvo = st.date_input(
+        "Digite/Selecione a data futura",
+        value=(last_date + timedelta(days=30)).date(),
+        key="alvo_date",
+    )
     if alvo <= last_date.date():
         st.error("A data precisa ser futura (maior que a última data do CSV).")
         st.stop()
 
-    horizon = int((pd.to_datetime(alvo) - pd.to_datetime(last_date.date())).days)
+    alvo_ts = pd.to_datetime(alvo)
+    horizon = int((alvo_ts - pd.to_datetime(last_date.date())).days)
     st.write(f"Dias simulados até a data alvo: **{horizon}**")
 
-    mode = st.selectbox("Cenário", ["Constante", "Constante + Ruído", "Aleatório (volatilidade)"])
+    mode = st.selectbox(
+        "Cenário",
+        ["Constante", "Constante + Ruído", "Aleatório (volatilidade)"],
+        key="cenario_mode",
+    )
+
     if mode == "Constante":
-        mu = st.number_input("Retorno diário (%)", value=0.20, step=0.05) / 100.0
+        mu = st.number_input("Retorno diário (%)", value=0.20, step=0.05, key="mu_const") / 100.0
         sigma = 0.0
     elif mode == "Constante + Ruído":
-        mu = st.number_input("Retorno médio diário (%)", value=0.15, step=0.05) / 100.0
-        sigma = st.number_input("Ruído diário (%)", value=0.30, step=0.05) / 100.0
+        mu = st.number_input("Retorno médio diário (%)", value=0.15, step=0.05, key="mu_ruido") / 100.0
+        sigma = st.number_input("Ruído diário (%)", value=0.30, step=0.05, key="sigma_ruido") / 100.0
     else:
-        mu = st.number_input("Retorno médio diário (%)", value=0.05, step=0.05) / 100.0
-        sigma = st.number_input("Volatilidade diária (%)", value=0.80, step=0.05) / 100.0
+        mu = st.number_input("Retorno médio diário (%)", value=0.05, step=0.05, key="mu_alea") / 100.0
+        sigma = st.number_input("Volatilidade diária (%)", value=0.80, step=0.05, key="sigma_alea") / 100.0
 
-    seed = st.number_input("Seed", value=42, step=1)
+    seed = st.number_input("Seed", value=42, step=1, key="seed_sim")
     np.random.seed(int(seed))
 
+    # datas futuras (diárias)
     future_dates = [last_date + timedelta(days=i) for i in range(1, horizon + 1)]
     rets = np.random.normal(loc=mu, scale=sigma, size=horizon)
 
@@ -523,14 +538,18 @@ with tab_produto:
         "Mínima": [p * 0.998 for p in future_prices],
     })
 
+    # monta série completa e recalcula features
     full = pd.concat([base, fut], ignore_index=True).sort_values("Data").reset_index(drop=True)
     full = correcao_escala_por_vizinhanca(full)
     full = compute_features_inplace(full)
     full = full.replace([np.inf, -np.inf], np.nan)
 
-    future_block_all = full[full["Data"].isin(future_dates)].copy()
-    mask_valid = future_block_all[features].notna().all(axis=1)
+    # ✅ CORREÇÃO CRÍTICA: filtro por RANGE (não por isin), assim SEMPRE acompanha a data alvo escolhida
+    start_future = last_date + timedelta(days=1)
+    future_block_all = full[(full["Data"] >= start_future) & (full["Data"] <= alvo_ts)].copy()
 
+    # contagem de inválidos (só para transparência)
+    mask_valid = future_block_all[features].notna().all(axis=1)
     n_total = int(len(future_block_all))
     n_valid = int(mask_valid.sum())
     n_drop = n_total - n_valid
@@ -544,27 +563,13 @@ with tab_produto:
             with st.expander("Ver motivos do descarte (features com NaN/Inf)"):
                 st.write(nan_counts)
 
-    future_block = future_block_all.loc[mask_valid].copy()
+    # ✅ à prova de cenário: se sobrar algum NaN, imputamos (em vez de “gráfico não muda” por falta de dias)
+    future_block = future_block_all.copy()
+    future_block[features] = future_block[features].replace([np.inf, -np.inf], np.nan)
+    future_block[features] = future_block[features].ffill().bfill().fillna(0.0)
 
-    if n_valid == 0:
-        st.warning(
-            "Nenhum dia simulado ficou válido para previsão. "
-            "Tente uma data mais distante (mais histórico para janelas 20/30) ou ajuste o cenário (mu/sigma)."
-        )
-        append_usage_log({
-            "action": "simulacao_futura",
-            "status": "no_valid_days",
-            "threshold": float(threshold),
-            "alvo_user": str(alvo),
-            "horizon_days": int(horizon),
-            "mode": str(mode),
-            "mu": float(mu),
-            "sigma": float(sigma),
-            "seed": int(seed),
-            "n_total": n_total,
-            "n_valid": n_valid,
-            "n_drop": n_drop,
-        })
+    if len(future_block) == 0:
+        st.warning("Não foi possível gerar dias simulados para a janela escolhida.")
         st.stop()
 
     Xf = future_block[features].values
@@ -573,12 +578,11 @@ with tab_produto:
     future_block["P(ALTA)"] = proba_f
     future_block["Sinal"] = np.where(pred_f == 1, "ALTA", "BAIXA")
 
-    alvo_ts = pd.to_datetime(alvo)
+    # pega previsão exatamente na data alvo (se existir), senão a última disponível
     if (future_block["Data"] == alvo_ts).any():
         row = future_block.loc[future_block["Data"] == alvo_ts].iloc[0]
     else:
-        candidatos = future_block[future_block["Data"] <= alvo_ts]
-        row = candidatos.iloc[-1] if len(candidatos) else future_block.iloc[-1]
+        row = future_block.iloc[-1]
 
     proba_alvo = float(row["P(ALTA)"])
     data_real_alvo = pd.to_datetime(row["Data"]).date()
@@ -596,8 +600,8 @@ with tab_produto:
         "sigma": float(sigma),
         "seed": int(seed),
         "n_total": n_total,
-        "n_valid": n_valid,
-        "n_drop": n_drop,
+        "n_valid_original": n_valid,
+        "n_drop_original": n_drop,
         "proba_alvo": float(proba_alvo),
         "pred_alvo": int(sinal_alvo),
     })
@@ -620,8 +624,8 @@ with tab_produto:
         show_rangeslider=show_rangeslider,
     )
 
-    # ✅ key variável força o Streamlit a recriar o gráfico quando a simulação muda
-    sim_key = f"sim_{alvo}_{mode}_{mu}_{sigma}_{seed}_{threshold}_{horizon}_{n_valid}_{n_drop}"
+    # ✅ chave muda com os parâmetros => Streamlit recria o gráfico
+    sim_key = f"sim_{alvo}_{mode}_{mu}_{sigma}_{seed}_{threshold}_{horizon}_{n_total}_{n_drop}"
 
     st.plotly_chart(
         fig2,
@@ -637,7 +641,7 @@ with tab_historico:
     st.subheader("Histórico: selecione uma data do dataset e obtenha a tendência do dia seguinte")
 
     date_options = df["Data"].dt.date.tolist()
-    selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1)
+    selected_date = st.selectbox("Data (histórico)", options=date_options, index=len(date_options) - 1, key="hist_date")
 
     idx_list = df.index[df["Data"].dt.date == selected_date]
     idx = int(idx_list[0])
@@ -678,7 +682,7 @@ with tab_historico:
         show_rangeslider=show_rangeslider,
     )
 
-    hist_key = f"hist_{selected_date}_{threshold}_{view_n}"
+    hist_key = f"hist_{selected_date}_{threshold}_{view_n}_{chart_height}_{show_rangeslider}"
 
     st.plotly_chart(
         fig,
