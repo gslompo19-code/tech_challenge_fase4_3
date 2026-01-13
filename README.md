@@ -1,4 +1,4 @@
-📈 IBOV TrendLab — Previsão de Movimento do Ibovespa (CatBoost)
+📈 **IBOV TrendLab — Previsão de Movimento do Ibovespa (CatBoost)**
 
 Aplicação web em Streamlit que estima a probabilidade do IBOV subir no próximo dia (P(ALTA)) usando um modelo CatBoost previamente treinado no Tech Challenge (FIAP) — Fase 2.
 Nesta entrega (Fase 4), o app faz somente inferência (sem re-treino) e oferece uma experiência interativa para simulação, análise do histórico e testes com dados próprios.
