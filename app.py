@@ -157,14 +157,13 @@ def correcao_escala_por_vizinhanca(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_features_inplace(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Aplica o mesmo pipeline de features no dataframe recebido.
+    Aplica o pipeline de features no dataframe recebido.
     Espera colunas: Data, Vol., Último, Abertura, Máxima, Mínima
     """
     df = df.copy()
     df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
     df = df.dropna(subset=["Data"]).sort_values("Data").reset_index(drop=True)
 
-    # garante numéricos
     for c in ["Último", "Abertura", "Máxima", "Mínima", "Vol."]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -300,7 +299,7 @@ def predict_proba_batch(model, scaler, X, threshold):
 
 
 # =========================
-# Gráfico Intuitivo (1 painel, 2 eixos, SEM conflito)
+# Gráfico Intuitivo (1 painel, 2 eixos, SEM conflito e SEM travar estado antigo)
 # =========================
 def make_signal_chart_intuitivo(
     df_plot: pd.DataFrame,
@@ -413,6 +412,10 @@ def make_signal_chart_intuitivo(
             showgrid=False,
         ),
     )
+
+    # ✅ força o eixo X a acompanhar o dataframe (evita ficar "preso" em faixa antiga)
+    fig.update_xaxes(range=[dates.min(), dates.max()])
+
     return fig
 
 
@@ -526,8 +529,8 @@ with tab_produto:
     full = full.replace([np.inf, -np.inf], np.nan)
 
     future_block_all = full[full["Data"].isin(future_dates)].copy()
-
     mask_valid = future_block_all[features].notna().all(axis=1)
+
     n_total = int(len(future_block_all))
     n_valid = int(mask_valid.sum())
     n_drop = n_total - n_valid
@@ -599,7 +602,6 @@ with tab_produto:
         "pred_alvo": int(sinal_alvo),
     })
 
-    # ===== mini painel "produto"
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Data alvo (escolhida)", str(alvo))
     c2.metric("Data efetiva (prevista)", str(data_real_alvo))
@@ -617,7 +619,16 @@ with tab_produto:
         height=chart_height,
         show_rangeslider=show_rangeslider,
     )
-    st.plotly_chart(fig2, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
+
+    # ✅ key variável força o Streamlit a recriar o gráfico quando a simulação muda
+    sim_key = f"sim_{alvo}_{mode}_{mu}_{sigma}_{seed}_{threshold}_{horizon}_{n_valid}_{n_drop}"
+
+    st.plotly_chart(
+        fig2,
+        use_container_width=True,
+        config={"displaylogo": False, "scrollZoom": True},
+        key=sim_key,
+    )
 
 # =========================
 # TAB 2 — HISTÓRICO
@@ -666,7 +677,15 @@ with tab_historico:
         height=chart_height,
         show_rangeslider=show_rangeslider,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False, "scrollZoom": True})
+
+    hist_key = f"hist_{selected_date}_{threshold}_{view_n}"
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displaylogo": False, "scrollZoom": True},
+        key=hist_key,
+    )
 
 # =========================
 # TAB 3 — DIAGNÓSTICO
