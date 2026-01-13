@@ -840,7 +840,7 @@ with tab_diag:
 # ✅ TAB 4 — ENTRADA DE DADOS (UPLOAD / MANUAL)
 # =========================
 with tab_entrada:
-    st.subheader("Entrada de Dados: Upload de CSV ou Entrada Manual (OHLCV)")
+    st.subheader("Entrada de Dados: Upload de CSV ou Entrada Manual ")
     st.info(
         "Aqui você pode **inserir seus próprios dados** de duas formas:\n"
         "1) **Upload de CSV** com histórico\n"
@@ -849,7 +849,7 @@ with tab_entrada:
         icon="ℹ️",
     )
 
-    modo = st.radio("Modo de entrada", ["📤 Upload de CSV (histórico)", "✍️ Entrada manual (um dia OHLCV)"], horizontal=True)
+    modo = st.radio("Modo de entrada", ["📤 Upload de CSV (histórico)", "✍️ Entrada manual (um dia )"], horizontal=True)
 
     # ---------- UPLOAD CSV ----------
     if modo.startswith("📤"):
