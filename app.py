@@ -381,7 +381,7 @@ def plot_confusion_matrix(cm, labels=("Queda (0)", "Alta (1)")):
 # =========================
 # App
 # =========================
-st.title("📈 IBOV Signal — Sistema Preditivo (modelo do Colab, sem re-treino)")
+st.title("📈 Movimento Ibovespa — Sistema Preditivo")
 
 with st.sidebar:
     st.header("Config")
