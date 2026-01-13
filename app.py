@@ -479,7 +479,7 @@ def make_signal_chart_intuitivo(
 # =========================
 # App
 # =========================
-st.title("📈 IBOV Signal — Sistema Preditivo (modelo do Colab, sem re-treino)")
+st.title("📈 IBOV TrendLab - Previsão de movimento do Ibovespa")
 
 with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
     st.markdown(
@@ -488,10 +488,10 @@ with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
 - Você ajusta o **Threshold** (na lateral). Se **P(ALTA) ≥ Threshold**, o sinal vira **ALTA**; caso contrário, **BAIXA**.
 
 **Abas**
-- **🧠 Produto (Simulação futura):** escolha uma **data futura** e um **cenário de simulação**. O app **simula preços até a data** e calcula o sinal/probabilidade para esse período (**não é dado real futuro**, é simulação).
+- **🧠 Sandbox de Simulação:** escolha uma **data futura** e um **cenário de simulação**. O app **simula preços até a data** e calcula o sinal/probabilidade para esse período (**não é dado real futuro**, é simulação).
 - **📅 Histórico:** selecione uma **data do dataset** e veja a previsão para o **dia seguinte**, com gráfico do histórico.
 - **🔎 Diagnóstico:** painel com **métricas do modelo** (fixas do treino) e informações do dataset.
-- **📤 Entrada de Dados:** envie seu **CSV** (histórico) **ou** crie uma **linha manual** (OHLCV) e veja a previsão.
+- **📤 Testar com Meus Dados:** envie seu **CSV** (histórico) **ou** crie uma **linha manual** (OHLCV) e veja a previsão.
         """.strip()
     )
 
@@ -544,7 +544,7 @@ df, features = load_df_and_features(DEFAULT_CSV)
 
 # ✅ sem alterar as abas atuais, apenas adicionando uma nova aba no final
 tab_produto, tab_historico, tab_diag, tab_entrada = st.tabs(
-    ["🧠 Produto (Simulação futura)", "📅 Histórico (data do dataset)", "🔎 Diagnóstico (métricas)", "📤 Entrada de Dados"]
+    ["🧠 Produto (Simulação futura)", "📅 Histórico", "🔎 Diagnóstico", "📤 Testar com Meus Dados"]
 )
 
 # =========================
