@@ -1,115 +1,121 @@
-📈 **IBOVESPA — Sistema Preditivo (CatBoost + Streamlit)**
+**IBOV TrendLab — Previsão de Movimento do Ibovespa (CatBoost)**
 
-Aplicação Streamlit para inferência (sem re-treino) de um modelo preditivo de tendência do IBOVESPA para o dia seguinte (ALTA / BAIXA), treinado previamente no Google Colab e empacotado como artefatos:
+Aplicação web em Streamlit que estima a probabilidade do IBOV subir no próximo dia (P(ALTA)) usando um modelo CatBoost previamente treinado no Tech Challenge (FIAP) — Fase 2. Nesta entrega (Fase 4), o app faz somente inferência (sem re-treino) e oferece uma experiência interativa para simulação e testes com dados próprios.
+App publicado (Streamlit)
 
-•	modelo_catboost.pkl — modelo CatBoostClassifier
-•	scaler_minmax.pkl — normalizador MinMaxScaler
+O app está online e acessível publicamente:
+Link: https://techchallengefase43-fmkdk4wv8f4tdjwoyt9kay.streamlit.app/
 
-O app foi desenvolvido como entrega do Tech Challenge – Fase 4, com foco em deploy, monitoramento e visualização do modelo.
+O que o app entrega
+•	P(ALTA): probabilidade estimada de o IBOV fechar mais alto no próximo dia.
+•	Sinal: decisão binária baseada em um corte (Threshold).
+•	P(ALTA) ≥ Threshold → ALTA
+•	P(ALTA) < Threshold → BAIXA
 
-🎯 **Objetivo do Projeto**
+Você pode ajustar o Threshold na barra lateral para deixar o sinal mais conservador (threshold maior) ou mais sensível (threshold menor).
 
-Predizer a tendência do IBOVESPA no dia seguinte, a partir de dados históricos:
+**Abas do aplicativo**
 
-•	ALTA se P(ALTA) ≥ threshold
-•	BAIXA caso contrário
+1) Sandbox de Simulação (Simulação futura)
+Como não existe “preço real do futuro” no dataset, esta aba permite:
+•	Escolher uma data futura e um cenário.
+•	Configurar retorno médio (mu), volatilidade (sigma) e seed.
+•	Gerar uma trajetória simulada de preços até a data alvo.
+•	Calcular P(ALTA) e Sinal ao longo do período simulado.
+Importante: não é previsão de preço real futuro — é uma simulação para testar comportamento do modelo e cenários.
 
-Disponibilizar uma interface interativa em Streamlit que permita:
+2) Testar com Meus Dados (Upload de CSV ou Entrada Manual)
+Permite testar o modelo com dados próprios de duas formas:
 
-•	Consultar previsões por data histórica
-•	Visualizar sinais do modelo no tempo
-•	Ajustar o threshold de decisão
-•	Avaliar métricas fixas do modelo
-•	Executar backtest completo no histórico
-•	Registrar logs de uso (simulação de produção)
+2.1) Upload de CSV (histórico)
+O usuário envia um CSV com histórico e o app padroniza os dados, calcula indicadores técnicos (features), permite escolher uma data e prever o dia seguinte, e plota gráfico com preço e probabilidade.
+O CSV precisa conter as colunas:
+•	Data (data do pregão)
+•	Último (fechamento)
+•	Abertura (abertura)
+•	Máxima (máxima do dia)
+•	Mínima (mínima do dia)
+•	Vol. (volume numérico ou texto tipo 10.2M, 350K, 1.2B)
 
-🧠 **Funcionamento do Modelo**
+2.2) Entrada manual (um dia OHLCV)
+O usuário preenche um único dia com Data, Abertura, Máxima, Mínima, Último e Volume. O app anexa esse registro ao histórico padrão para calcular as features e prever a tendência do dia seguinte ao dia inserido.
 
-**Alvo**
-O alvo é definido como:
-•	1 (ALTA) se Último(t+1) > Último(t)
-•	0 (BAIXA) caso contrário
+3) Histórico (dados reais do dataset)
+Trabalha com dados reais do CSV padrão do projeto. Você seleciona uma data do histórico e o app calcula P(ALTA) e Sinal para o dia seguinte. As previsões usam as mesmas features utilizadas no modelo CatBoost treinado na Fase 2 do Tech Challenge (FIAP).
 
-A última linha do dataset é descartada por não possuir o valor de t+1.
+4) Diagnóstico (métricas do treino)
+Mostra métricas fixas do treinamento (Colab / Fase 2), como acurácia (treino e teste), overfitting, F1 (CV), matriz de confusão e classification report, além de um resumo do período do dataset carregado.
 
-**Features Utilizadas**
+Features (indicadores técnicos) usadas no modelo
 
-Retorno e volatilidade:
-•	ret_1d, log_ret, ret_5d, rv_20
+O app calcula indicadores/variáveis que alimentam o modelo, incluindo:
+•	Retornos: ret_1d, ret_5d, log_ret
+•	Volatilidade: rv_20
+•	Indicadores: rsi, macd, sinal_macd, hist_macd
+•	Bollinger: bb_largura
+•	ATR: atr_pct
+•	Volume/OBV: vol_log, vol_ret, obv_diff
+•	Z-scores: z_close_20, z_rsi_20, z_macd_20
+•	Calendário: dia (dia da semana)
 
-Risco e bandas:
-•	atr_pct, bb_largura, desvio_mm3_pct
+Há proteções contra NaN/Inf e uma correção de escala por vizinhança para lidar com valores fora de escala no histórico.
+Estrutura do repositório (recomendada)
+.
+├── app.py
+├── Dados Ibovespa (2).csv
+├── modelo_catboost.pkl
+├── scaler_minmax.pkl
+├── requirements.txt
+└── logs/
+    ├── usage_log.csv
+    └── usage_log.jsonl
 
-Volume e fluxo:
-•	vol_log, vol_ret, obv_diff
+Como rodar localmente
 
-Indicadores técnicos:
-•	rsi, macd, sinal_macd, hist_macd
+1) Clonar o repositório
+git clone <URL_DO_SEU_REPO>
+cd <PASTA_DO_REPO>
 
-Calendário:
-•	dia
+2) Criar ambiente virtual (opcional, recomendado)
+Windows (PowerShell):
+python -m venv .venv
+.venv\Scripts\activate
+Mac/Linux:
+python -m venv .venv
+source .venv/bin/activate
 
-Normalização estatística:
-•	z_close_20, z_rsi_20, z_macd_20
+3) Instalar dependências
+pip install -r requirements.txt
 
-Linhas com valores ausentes nessas features são removidas antes da inferência.
+4) Executar o app
+streamlit run app.py
+requirements.txt (exemplo)
+Se precisar de um modelo base:
+streamlit
+pandas
+numpy
+plotly
+joblib
+scikit-learn
+catboost
 
-Normalização
+Observação: dependendo de como o .pkl foi salvo, catboost pode ser necessário no ambiente para carregar o modelo.
 
-As features são normalizadas com o mesmo MinMaxScaler usado no treinamento:
-Xs = scaler.transform(X)
+Logs de uso
 
-Decisão
+O app registra interações do usuário em:
+•	logs/usage_log.csv
+•	logs/usage_log.jsonl
 
-O modelo retorna P(ALTA) e o sinal final depende de um threshold ajustável:
+Exemplos de eventos registrados: simulação futura (data alvo, cenário, mu/sigma, seed, P(ALTA), sinal), upload de CSV (nome do arquivo, linhas válidas), entrada manual OHLCV (valores e resultado), previsões no histórico e abertura do diagnóstico.
 
-pred = (P(ALTA) >= threshold)
+Avisos importantes
+•	Projeto acadêmico/didático — não é recomendação de investimento.
+•	A simulação futura usa dados simulados para criar cenário; não representa preço real do futuro.
+•	O resultado do modelo depende da qualidade do histórico e das features calculadas.
 
-🧩 **Correção de Escala do Preço (Patch Anti “Gráfico Pente”)**
+Projeto
 
-Alguns CSVs históricos apresentam erros de escala no preço (Último), com valores 10x, 100x ou 1000x menores. Para evitar distorções visuais, o app aplica uma correção automática por vizinhança:
-
-•	Compara o preço atual com o dia anterior
-•	Testa fatores de correção (10, 100, 1000)
-•	Ajusta quando o valor corrigido fica próximo ao preço anterior
-
-Esse patch é aplicado:
-
-•	No carregamento do histórico
-•	Antes da geração de gráficos e sinais
-
-🖥️ **Estrutura do Streamlit**
-
-🧠 Aba Produto
-•	Seleção de data histórica
-•	Previsão da tendência do dia seguinte
-•	Exibição de P(ALTA), P(BAIXA) e sinal final
-•	Gráfico interativo com preço corrigido, sinais e probabilidade
-•	Registro automático ou manual de logs de uso
-
-📉 Aba Backtest Completo (Opcional)
-•	Predição em todo o histórico disponível
-•	Comparação entre previsão e alvo real
-•	Acurácia no histórico completo
-•	Gráfico observado vs previsto
-•	Download do backtest em CSV
-O modelo não é re-treinado, tratando-se apenas de inferência retrospectiva.
-
-🔎 Aba Diagnóstico
-•	Acurácia de treino e teste
-•	F1-score médio (cross-validation)
-•	Overfitting
-•	Matriz de confusão
-•	Classification report
-•	Auditoria do dataset
-•	Visualização e download do log de uso
-
-⚠️ **Aviso Legal**
-Projeto estritamente educacional. Não constitui recomendação de investimento ou aconselhamento financeiro.
-
-📌 **Próximos Passos (Evolução)**
-•	Métricas financeiras (retorno acumulado, drawdown)
-•	Explainability (SHAP)
-•	Upload dinâmico de CSV pelo usuário
-•	Monitoramento contínuo de drift
-•	Persistência de parâmetros do usuário
+Desenvolvido para o Tech Challenge (FIAP):
+•	Fase 2: treinamento do modelo (CatBoost) e validação.
+•	Fase 4: aplicação em Streamlit para uso interativo (inferência, simulação e testes).
