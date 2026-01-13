@@ -387,13 +387,20 @@ def make_signal_chart_intuitivo(
         )
     )
 
+    # ✅ AJUSTE: legenda embaixo (evita cobrir o rangeselector)
     fig.update_layout(
         template="plotly_white",
         title=title,
         height=int(height),
-        margin=dict(l=10, r=10, t=70, b=10),
+        margin=dict(l=10, r=10, t=70, b=90),  # b maior pra caber a legenda embaixo
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,   # joga a legenda para baixo do gráfico
+            xanchor="left",
+            x=0,
+        ),
         xaxis=dict(
             type="date",
             rangeslider=dict(visible=bool(show_rangeslider)),
@@ -426,9 +433,8 @@ def make_signal_chart_intuitivo(
 # =========================
 # App
 # =========================
-st.title("📈 IBOV TrendLab")
+st.title("📈 IBOV Signal — Sistema Preditivo (modelo do Colab, sem re-treino)")
 
-# ✅ EXPLICAÇÃO SUTIL E OBJETIVA (PÁGINA)
 with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
     st.markdown(
         """
@@ -436,7 +442,7 @@ with st.expander("ℹ️ Como usar o aplicativo (rápido)", expanded=True):
 - Você ajusta o **Threshold** (na lateral). Se **P(ALTA) ≥ Threshold**, o sinal vira **ALTA**; caso contrário, **BAIXA**.
 
 **Abas**
-- **🧠 Simulação Futura:** escolha uma **data futura** e um **cenário de simulação**. O app **simula preços até a data** e calcula o sinal/probabilidade para esse período (**não é dado real futuro**, é simulação).
+- **🧠 Produto (Simulação futura):** escolha uma **data futura** e um **cenário de simulação**. O app **simula preços até a data** e calcula o sinal/probabilidade para esse período (**não é dado real futuro**, é simulação).
 - **📅 Histórico:** selecione uma **data do dataset** e veja a previsão para o **dia seguinte**, com gráfico do histórico.
 - **🔎 Diagnóstico:** painel com **métricas do modelo** (fixas do treino) e informações do dataset.
 
@@ -459,8 +465,6 @@ with st.sidebar:
     show_rangeslider = st.checkbox("Mostrar range slider", value=True)
 
     st.divider()
-
-    # ✅ EXPLICAÇÃO NO LUGAR NATURAL (SIDEBAR)
     with st.expander("📌 Entenda P(ALTA) e Threshold", expanded=False):
         st.markdown(
             """
@@ -498,7 +502,7 @@ except Exception as e:
 df, features = load_df_and_features(DEFAULT_CSV)
 
 tab_produto, tab_historico, tab_diag = st.tabs(
-    ["🧠 Simulação Futura", "📅 Histórico ", "🔎 Diagnóstico "]
+    ["🧠 Produto (Simulação futura)", "📅 Histórico (data do dataset)", "🔎 Diagnóstico (métricas)"]
 )
 
 # =========================
@@ -507,7 +511,6 @@ tab_produto, tab_historico, tab_diag = st.tabs(
 with tab_produto:
     st.subheader("Produto: Simulação futura (data manual, sem travar)")
 
-    # ✅ TEXTO CURTO NO LUGAR CERTO
     st.info(
         "Aqui você escolhe uma **data futura** e um **cenário**. Como não existe preço real do futuro no CSV, "
         "o app **simula uma trajetória de preços** até a data escolhida e calcula **P(ALTA)** e **Sinal** "
@@ -556,7 +559,6 @@ with tab_produto:
     seed = st.number_input("Seed", value=42, step=1, key="seed_sim")
     np.random.seed(int(seed))
 
-    # datas futuras (diárias)
     future_dates = [last_date + timedelta(days=i) for i in range(1, horizon + 1)]
     rets = np.random.normal(loc=mu, scale=sigma, size=horizon)
 
@@ -575,17 +577,14 @@ with tab_produto:
         "Mínima": [p * 0.998 for p in future_prices],
     })
 
-    # monta série completa e recalcula features
     full = pd.concat([base, fut], ignore_index=True).sort_values("Data").reset_index(drop=True)
     full = correcao_escala_por_vizinhanca(full)
     full = compute_features_inplace(full)
     full = full.replace([np.inf, -np.inf], np.nan)
 
-    # ✅ CORREÇÃO CRÍTICA: filtro por RANGE (não por isin), assim SEMPRE acompanha a data alvo escolhida
     start_future = last_date + timedelta(days=1)
     future_block_all = full[(full["Data"] >= start_future) & (full["Data"] <= alvo_ts)].copy()
 
-    # contagem de inválidos (só para transparência)
     mask_valid = future_block_all[features].notna().all(axis=1)
     n_total = int(len(future_block_all))
     n_valid = int(mask_valid.sum())
@@ -600,7 +599,6 @@ with tab_produto:
             with st.expander("Ver motivos do descarte (features com NaN/Inf)"):
                 st.write(nan_counts)
 
-    # ✅ à prova de cenário: se sobrar algum NaN, imputamos (em vez de “gráfico não muda” por falta de dias)
     future_block = future_block_all.copy()
     future_block[features] = future_block[features].replace([np.inf, -np.inf], np.nan)
     future_block[features] = future_block[features].ffill().bfill().fillna(0.0)
@@ -615,7 +613,6 @@ with tab_produto:
     future_block["P(ALTA)"] = proba_f
     future_block["Sinal"] = np.where(pred_f == 1, "ALTA", "BAIXA")
 
-    # pega previsão exatamente na data alvo (se existir), senão a última disponível
     if (future_block["Data"] == alvo_ts).any():
         row = future_block.loc[future_block["Data"] == alvo_ts].iloc[0]
     else:
@@ -661,7 +658,6 @@ with tab_produto:
         show_rangeslider=show_rangeslider,
     )
 
-    # ✅ chave muda com os parâmetros => Streamlit recria o gráfico
     sim_key = f"sim_{alvo}_{mode}_{mu}_{sigma}_{seed}_{threshold}_{horizon}_{n_total}_{n_drop}"
 
     st.plotly_chart(
@@ -677,7 +673,6 @@ with tab_produto:
 with tab_historico:
     st.subheader("Histórico: selecione uma data do dataset e obtenha a tendência do dia seguinte")
 
-    # ✅ TEXTO CURTO NO LUGAR CERTO
     st.info(
         "Aqui você trabalha com **dados reais do CSV**. Selecione uma data e veja a previsão do **dia seguinte** "
         f"como **P(ALTA)** e **Sinal** (usando o **Threshold** da lateral).",
@@ -741,7 +736,6 @@ with tab_historico:
 with tab_diag:
     st.subheader("Painel explícito de métricas (fixas do Colab — sem re-treino)")
 
-    # ✅ TEXTO CURTO NO LUGAR CERTO
     st.info(
         "Este painel mostra as **métricas do treinamento no Colab** (fixas, sem re-treino aqui) "
         "e um resumo do período do dataset carregado.",
