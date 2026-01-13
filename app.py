@@ -42,8 +42,8 @@ METRICAS_COLAB = {
 1       0.79      0.79      0.79        14
 
 accuracy                           0.80        30
-macro avg       0.80      0.80      0.80        30
-weighted avg    0.80      0.80      0.80        30"""
+macro avg       0.80      0.80     0.80        30
+weighted avg    0.80      0.80     0.80        30"""
 }
 
 
