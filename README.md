@@ -20,7 +20,7 @@ P(ALTA) < Threshold → 🔴 BAIXA
 
 🧭 Abas do aplicativo
 
-🧠 Sandbox de Simulação (Simulação futura)
+🧠 **Sandbox de Simulação (Simulação futura)**
 Como não existe “preço real do futuro” no dataset, esta aba permite:
 
 Escolher uma data futura e um cenário.
@@ -33,7 +33,7 @@ Calcular P(ALTA) e Sinal ao longo do período simulado.
 
 ⚠️ Importante: não é previsão de preço real futuro — é uma simulação para testar comportamento do modelo e cenários.
 
-📤 Testar com Meus Dados (Upload de CSV ou Entrada Manual)
+📤 **Testar com Meus Dados (Upload de CSV ou Entrada Manual)**
 Permite testar o modelo com dados próprios de duas formas:
 
 1) Upload de CSV (histórico)
@@ -65,11 +65,11 @@ Vol. (volume numérico ou texto tipo 10.2M, 350K, 1.2B)
 O usuário preenche um único dia com Data, Abertura, Máxima, Mínima, Último e Volume.
 O app anexa esse registro ao histórico padrão para calcular as features e prever a tendência do dia seguinte ao dia inserido.
 
-📅 Histórico (dados reais do dataset)
+📅 **Histórico (dados reais do dataset)**
 Trabalha com dados reais do CSV padrão do projeto. Você seleciona uma data do histórico e o app calcula P(ALTA) e Sinal para o dia seguinte.
 As previsões usam as mesmas features utilizadas no modelo CatBoost treinado na Fase 2 do Tech Challenge (FIAP).
 
-🔎 Diagnóstico (métricas do treino)
+🔎 **Diagnóstico (métricas do treino)**
 Mostra métricas fixas do treinamento (Colab / Fase 2), como:
 
 Acurácia (treino e teste)
